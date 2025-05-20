@@ -1,0 +1,20 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug Lightroom_Face_to_Metadata.py",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/Lightroom_Face_to_Metadata.py",
+            "args": [
+                "--catalog",
+                "E:\\Users\\massi\\OneDrive\\Pictures\\Test 2\\T2\\T2.lrcat",
+                "--exiftool",
+                "E:\\exiftool.exe",
+                "--log-level",
+                "INFO"
+            ],
+            "console": "integratedTerminal"
+        }
+    ]
+}
