@@ -21,7 +21,7 @@ Options are:
     --catalog		Path to Lightroom .lrcat file
     --log			Path to save the log file - default log.txt in the same folder of the script
     --write			Enable actual writing (default is dry-run)
-    --exiftool-path        Path to the exiftool executable - default is exiftool in the same folder of the script
+    --exiftool-path          Path to the exiftool executable - default is exiftool in the same folder of the script
     --log-level		Set the logging level - default is 'INFO', choices are 'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'
 
   
