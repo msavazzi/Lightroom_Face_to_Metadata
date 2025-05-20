@@ -10,7 +10,9 @@ Based on the database schema from: ***Lightroom Classic 14.3*** analyzed as *SQL
 
   
 
-The usage of python and ExifTool is needed as Lightroom does not write face data to metadata nor it provides a way to export it via Plugin API
+The usage of python and ExifTool is needed as Lightroom does not write face data to metadata nor it provides a way to export it via Plugin API.
+The script does read the database for all files with Faces and extracts all the regions as defined in Lightroom, this is done in memory. 
+For every file it extracts the XMP metadata, if possible in MWG format, for the embedded metadata or the XMP sidecart .xmp file and compares the Face from database with the ones in metadata. The check to avoid duplicates is done on the name and on the region. If the Face is not present in the file it is added to the XMP metadata. The script manages flat metadata (as in .heic files) and hierarchical regions (as in .jpg files).
 
   
 
