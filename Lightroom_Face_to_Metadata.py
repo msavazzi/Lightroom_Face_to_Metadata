@@ -82,7 +82,7 @@ def fetch_keyword_hierarchy(catalog_path: str) -> Dict[int, str]:
                 LK.parent,
                 CASE
                 WHEN pb.full_path = '' THEN LK.name
-                ELSE pb.full_path || '/' || LK.name
+                ELSE pb.full_path || '|' || LK.name
                 END AS full_path
             FROM AgLibraryKeyword LK
             JOIN path_builder pb ON LK.parent = pb.id_local
@@ -167,8 +167,8 @@ def fetch_face_data(catalog_path: str) -> List[Tuple]:
         results = []
         for rootPath, fileName, folderPath, ext, name, keyword_id, left, top, right, bottom, cw, ch, cx, cy in rows:
             full_path = os.path.normpath(os.path.join(rootPath, folderPath, fileName))
-            results.append((full_path, ext, name, keyword_id, left, top, right, bottom, cw, ch, cx, cy, id_local))
-            logging.debug(f"DB Face:\t{full_path}\t{ext}\t{name}\t{keyword_id}\t{left}\t{top}\t{right}\t{bottom}\t{cw}\t{ch}\t{cx}\t{cy}\t{id_local}")
+            results.append((full_path, ext, name, keyword_id, left, top, right, bottom, cw, ch, cx, cy))
+            logging.debug(f"DB Face:\t{full_path}\t{ext}\t{name}\t{keyword_id}\t{left}\t{top}\t{right}\t{bottom}\t{cw}\t{ch}\t{cx}\t{cy}")
         return results
 
     except sqlite3.OperationalError as e:
