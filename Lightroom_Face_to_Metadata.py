@@ -32,11 +32,12 @@ import logging
 import subprocess
 from tqdm import tqdm
 from datetime import datetime
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 
 # RAW formats that typically require XMP sidecars
 RAW_FORMATS = {'cr2', 'cr3', 'nef', 'arw', 'rw2', 'orf', 'raf', 'dng', 'pef', 'sr2'}
 
+# Parse command line arguments
 def parse_args():
     parser = argparse.ArgumentParser(description="Sync Lightroom face data to image metadata.")
     parser.add_argument('--catalog', required=True, help='Path to Lightroom .lrcat file')
@@ -44,8 +45,10 @@ def parse_args():
     parser.add_argument('--write', action='store_true', help='Enable actual writing (default is dry-run)')
     parser.add_argument('--exiftool-path', default='exiftool', help='Path to the exiftool executable')
     parser.add_argument('--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], help='Set the logging level')
+    parser.add_argument('--write-hierarchical-tags', action='store_true', help='Write hierarchical keyword tags to metadata')
     return parser.parse_args()
 
+# Initialize logging
 def init_logging(log_path: str, session_id: str, log_level: str):
     logging.basicConfig(
         filename=log_path,
@@ -54,6 +57,56 @@ def init_logging(log_path: str, session_id: str, log_level: str):
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
+# Extract keyword hierarchy using recursive CTE
+def fetch_keyword_hierarchy(catalog_path: str) -> Dict[int, str]:
+    conn = sqlite3.connect(catalog_path)
+    cursor = conn.cursor()
+    cursor.execute("""
+        WITH RECURSIVE path_builder(id_local, name, parent, full_path) AS (
+          -- Base case: root nodes (parent IS NULL), assign empty string if name IS NULL
+          SELECT 
+            id_local,
+            name,
+            parent,
+            CASE WHEN name IS NULL THEN '' ELSE name END AS full_path
+          FROM AgLibraryKeyword
+          WHERE parent IS NULL
+          UNION ALL
+          -- Recursive case: build full_path by appending child name
+          SELECT
+            k.id_local,
+            k.name,
+            k.parent,
+            CASE
+              WHEN pb.full_path = '' THEN k.name
+              ELSE pb.full_path || '|' || k.name
+            END AS full_path
+          FROM AgLibraryKeyword k
+          JOIN path_builder pb ON k.parent = pb.id_local
+          WHERE k.name IS NOT NULL
+        )
+        SELECT
+          id_local,
+          name,
+          parent,
+          full_path
+        FROM path_builder
+        WHERE full_path != ''
+        ORDER BY full_path;
+    """)
+    
+    # Fetch results and build hierarchy dictionary
+    hierarchy = {}
+    for row in cursor.fetchall():
+        id_local, name, parent, full_path = row
+        hierarchy[id_local] = full_path
+        logging.debug(f"Keyword hierarchy: {id_local} -> {full_path}")
+    
+    conn.close()
+    logging.info(f"Loaded {len(hierarchy)} keyword hierarchies")
+    return hierarchy
+
+# Fetch face data from the Lightroom catalog
 def fetch_face_data(catalog_path: str) -> List[Tuple]:
     conn = sqlite3.connect(catalog_path)
     cursor = conn.cursor()
@@ -64,6 +117,7 @@ def fetch_face_data(catalog_path: str) -> List[Tuple]:
             LFo.pathFromRoot,
             LFi.extension,
             LK.name, 
+            LK.id_local keyword_id,
             LF.tl_x 'left',
             LF.tl_y 'top', 
             LF.br_x 'right', 
@@ -90,13 +144,15 @@ def fetch_face_data(catalog_path: str) -> List[Tuple]:
     conn.close()
     logging.debug(f"SQLite rows fetched: {len(rows)}")  
 
+    # Normalize and prepare results
     results = []
-    for rootPath, fileName, folderPath, ext, name, left, top, right, bottom, cw, ch, cx, cy in rows:
+    for rootPath, fileName, folderPath, ext, name, keyword_id, left, top, right, bottom, cw, ch, cx, cy in rows:
         full_path = os.path.normpath(os.path.join(rootPath, folderPath, fileName))
-        results.append((full_path, ext, name, left, top, right, bottom,cw, ch, cx, cy))
-        logging.info(f"DB Face:\t{full_path}\t{ext}\t{name}\t{left}\t{top}\t{right}\t{bottom}\t{cw}\t{ch}\t{cx}\t{cy}")
+        results.append((full_path, ext, name, keyword_id, left, top, right, bottom, cw, ch, cx, cy))
+        logging.info(f"DB Face:\t{full_path}\t{ext}\t{name}\t{keyword_id}\t{left}\t{top}\t{right}\t{bottom}\t{cw}\t{ch}\t{cx}\t{cy}")
     return results
 
+# Check if a face region is a duplicate based on name or area
 def is_duplicate(existing, name, cw, ch, cx, cy):
     for e_name, ex, ey, ew, eh in existing:
         if name == e_name:
@@ -105,6 +161,7 @@ def is_duplicate(existing, name, cw, ch, cx, cy):
             return 'area'
     return None
 
+# Extract existing face regions from image metadata using ExifTool
 def extract_existing_faces(file_path, exiftool_path, prefer_mwg=True) -> List[Tuple[str, float, float, float, float]]:
     def read_faces(target_path):
         cmd = [exiftool_path, '-j', '-struct', target_path]
@@ -179,10 +236,62 @@ def extract_existing_faces(file_path, exiftool_path, prefer_mwg=True) -> List[Tu
 
     return []
 
+# Extract existing keywords from image metadata using ExifTool
+def extract_existing_keywords(file_path, exiftool_path) -> List[str]:
+    # Function to read keywords from metadata using ExifTool
+    def read_keywords(target_path):
+        cmd = [exiftool_path, '-j', '-Keywords', '-Subject', '-HierarchicalSubject', target_path]
+        logging.debug(f"Running ExifTool keyword read:\t{' '.join(cmd)}")
+        result = subprocess.run(cmd,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                text=True,
+                                timeout=10)
+        if result.returncode != 0:
+            logging.error(f"ExifTool error reading keywords from {target_path}: {result.stderr.strip()}")
+            return []
+
+        try:
+            data_list = json.loads(result.stdout)
+            if not data_list:
+                return []
+            
+            data = data_list[0]
+            existing_keywords = set()
+            
+            # Check various keyword fields
+            for field in ['Keywords', 'Subject', 'HierarchicalSubject']:
+                values = data.get(field)
+                if values:
+                    if isinstance(values, list):
+                        existing_keywords.update(values)
+                    elif isinstance(values, str):
+                        existing_keywords.add(values)
+            
+            return list(existing_keywords)
+        except json.JSONDecodeError:
+            logging.error(f"Failed to parse JSON from ExifTool keyword output for {target_path}")
+            return []
+
+    # First try original file
+    keywords = read_keywords(file_path)
+    if keywords:
+        return keywords
+
+    # If no metadata and sidecar exists, try .xmp
+    sidecar = os.path.splitext(file_path)[0] + ".xmp"
+    if os.path.isfile(sidecar):
+        logging.debug(f"Trying to read keywords from sidecar XMP for {file_path}")
+        return read_keywords(sidecar)
+
+    return []
+
+# Write face region data to metadata using ExifTool
 def write_xmp_region(image_path, name, x, y, w, h, dry_run: bool, exiftool_path: str, use_sidecar: bool):
     args = [exiftool_path, '-overwrite_original']
     target = image_path
 
+    # If the image is a RAW format, we will use a sidecar XMP file
     if use_sidecar:
         sidecar_path = os.path.splitext(image_path)[0] + ".xmp"
         args += [
@@ -195,7 +304,7 @@ def write_xmp_region(image_path, name, x, y, w, h, dry_run: bool, exiftool_path:
             f'-XMP-mwg-rs:RegionAreaY+={y}',
             f'-XMP-mwg-rs:RegionAreaW+={w}',
             f'-XMP-mwg-rs:RegionAreaH+={h}',
-            '-o', sidecar_path
+            sidecar_path
         ]
     else:
         args += [
@@ -220,43 +329,124 @@ def write_xmp_region(image_path, name, x, y, w, h, dry_run: bool, exiftool_path:
         except Exception as e:
             logging.error(f"Error writing to {image_path}: {str(e)}")
 
+# Write hierarchical keyword to metadata using ExifTool
+def write_hierarchical_keyword(image_path, hierarchical_keyword: str, dry_run: bool, exiftool_path: str, use_sidecar: bool):
+    
+    args = [exiftool_path, '-overwrite_original']
+    target = image_path
+
+    # If the image is a RAW format, we will use a sidecar XMP file
+    if use_sidecar:
+        sidecar_path = os.path.splitext(image_path)[0] + ".xmp"
+        args += [
+            '-use', 'MWG',
+            '-tagsFromFile', '@',
+            '-all:all',
+            f'-Keywords+={hierarchical_keyword}',
+            f'-Subject+={hierarchical_keyword}',
+            f'-HierarchicalSubject+={hierarchical_keyword}',
+            '-o', sidecar_path
+        ]
+    else:
+        args += [
+            f'-Keywords+={hierarchical_keyword}',
+            f'-Subject+={hierarchical_keyword}',
+            f'-HierarchicalSubject+={hierarchical_keyword}'
+        ]
+
+    args.append(target)
+    logging.info(f"Running ExifTool keyword write:\t{' '.join(args)}")
+
+    if not dry_run:
+        try:
+            result = subprocess.run(args,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE,
+                                    text=True,
+                                    timeout=10)
+            if result.returncode != 0:
+                logging.error(f"Error writing keyword to {image_path}: {result.stderr.strip()}")
+        except Exception as e:
+            logging.error(f"Error writing keyword to {image_path}: {str(e)}")
+
 def main():
     args = parse_args()
     session_id = uuid.uuid4().hex[:8]
     init_logging(args.log, session_id, args.log_level)
     logging.warning(f'Session {session_id} started')
+    
+    # Load keyword hierarchy if hierarchical tags are requested
+    keyword_hierarchy = {}
+    if args.write_hierarchical_tags:
+        keyword_hierarchy = fetch_keyword_hierarchy(args.catalog)
+        logging.warning(f'Loaded {len(keyword_hierarchy)} keyword hierarchies')
+    
     face_data = fetch_face_data(args.catalog)
     logging.warning(f'{len(face_data)} face regions found in {args.catalog}')
-    odl_full_path = ""
+    old_full_path = ""
+    existing_faces = []
+    existing_keywords = []
 
     for row in tqdm(face_data, desc="Processing images"):
-        full_path, fmt, name, left, top, right, bottom, cw, ch, cx, cy = row
+        full_path, fmt, name, keyword_id, left, top, right, bottom, cw, ch, cx, cy = row
+        if full_path != old_full_path:
+            logging.warning(f"======")
+            logging.warning(f"File:\t{full_path}\tFormat:\t{fmt}")
+        else:
+            logging.warning(f"------")
         if not os.path.isfile(full_path):
             logging.error(f"File not found:\t{full_path}")
             continue
         else:
-            logging.warning(f"Processing\t{name}\t{full_path}")
+            logging.warning(f"Processing\t{name}")
 
-        if full_path != odl_full_path:
-            odl_full_path = full_path
-            existing = extract_existing_faces(full_path, args.exiftool_path)
+        # Only re-read existing data when we encounter a new file
+        if full_path != old_full_path:
+            old_full_path = full_path
+            existing_faces = []
+            existing_faces = extract_existing_faces(full_path, args.exiftool_path)
+            existing_keywords = []
+            if args.write_hierarchical_tags:
+                existing_keywords = extract_existing_keywords(full_path, args.exiftool_path)
 
-        dup_type = is_duplicate(existing, name, cw, ch, cx, cy)
+        # Check for duplicate faces
+        dup_type = is_duplicate(existing_faces, name, cw, ch, cx, cy)
         if dup_type:
-            logging.warning(f"Duplicate\t({dup_type}):\t{name}\tin\t{full_path}")
-            continue
+            logging.warning(f"Duplicate\t({dup_type}):\t{name}")
+        else:
+            # Write face region data
+            use_sidecar = fmt.lower() in RAW_FORMATS
+            log_type = "sidecar" if use_sidecar else "embedded"
 
-        use_sidecar = fmt.lower() in RAW_FORMATS
-        log_type = "sidecar" if use_sidecar else "embedded"
-        #logging.info(f"Writing {log_type} metadata for {name} to {full_path}")
+            write_xmp_region(full_path, name, cx, cy, cw, ch,
+                             dry_run=not args.write,
+                             exiftool_path=args.exiftool_path,
+                             use_sidecar=use_sidecar)
 
-        write_xmp_region(full_path, name, cx, cy, cw, ch,
-                         dry_run=not args.write,
-                         exiftool_path=args.exiftool_path,
-                         use_sidecar=use_sidecar)
+            action = "Wrote" if args.write else "Simulated write"
+            logging.warning(f"{action} ({log_type}) face\t'{name}'\tto\t{full_path} ")
 
-        action = "Wrote" if args.write else "Simulated write"
-        logging.warning(f"{action} face\t'{name}'\tto\t{full_path}")
+        # Write hierarchical keyword tag if requested and not already present
+        if args.write_hierarchical_tags and keyword_id in keyword_hierarchy:
+            hierarchical_keyword = keyword_hierarchy[keyword_id]
+            
+            # Check if this hierarchical keyword already exists
+            if hierarchical_keyword not in existing_keywords:
+                use_sidecar = fmt.lower() in RAW_FORMATS
+                log_type = "sidecar" if use_sidecar else "embedded"
+                
+                write_hierarchical_keyword(full_path, hierarchical_keyword,
+                                         dry_run=not args.write,
+                                         exiftool_path=args.exiftool_path,
+                                         use_sidecar=use_sidecar)
+                
+                action = "Wrote" if args.write else "Simulated write"
+                logging.warning(f"{action} ({log_type}) hierarchical keyword\t'{hierarchical_keyword}'\tto\t{full_path}")
+                
+                # Add to existing keywords to avoid re-writing in same session
+                existing_keywords.append(hierarchical_keyword)
+            else:
+                logging.info(f"Hierarchical keyword '{hierarchical_keyword}' already exists in {full_path}")
 
     logging.warning(f"Session {session_id} complete")
 

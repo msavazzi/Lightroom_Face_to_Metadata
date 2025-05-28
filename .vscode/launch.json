@@ -12,7 +12,9 @@
                 "--exiftool",
                 "E:\\exiftool.exe",
                 "--log-level",
-                "INFO"
+                "DEBUG",
+                "--write-hierarchical-tags",
+                "--write"
             ],
             "console": "integratedTerminal"
         }
