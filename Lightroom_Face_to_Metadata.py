@@ -59,98 +59,131 @@ def init_logging(log_path: str, session_id: str, log_level: str):
 
 # Extract keyword hierarchy using recursive CTE
 def fetch_keyword_hierarchy(catalog_path: str) -> Dict[int, str]:
-    conn = sqlite3.connect(catalog_path)
-    cursor = conn.cursor()
-    cursor.execute("""
-        WITH RECURSIVE path_builder(id_local, name, parent, full_path) AS (
-          -- Base case: root nodes (parent IS NULL), assign empty string if name IS NULL
-          SELECT 
+    try:
+        conn = sqlite3.connect(catalog_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            WITH RECURSIVE path_builder(id_local, name, parent, full_path) AS (
+            -- Base case: root nodes (parent IS NULL), assign empty string if name IS NULL
+            SELECT 
+                id_local,
+                name,
+                parent,
+                CASE WHEN name IS NULL THEN '' ELSE name END AS full_path
+            FROM AgLibraryKeyword
+            WHERE parent IS NULL
+
+            UNION ALL
+
+            -- Recursive case: build full_path by appending child name
+            SELECT
+                LK.id_local,
+                LK.name,
+                LK.parent,
+                CASE
+                WHEN pb.full_path = '' THEN LK.name
+                ELSE pb.full_path || '/' || LK.name
+                END AS full_path
+            FROM AgLibraryKeyword LK
+            JOIN path_builder pb ON LK.parent = pb.id_local
+            WHERE LK.name IS NOT NULL
+            )
+            SELECT
             id_local,
             name,
             parent,
-            CASE WHEN name IS NULL THEN '' ELSE name END AS full_path
-          FROM AgLibraryKeyword
-          WHERE parent IS NULL
-          UNION ALL
-          -- Recursive case: build full_path by appending child name
-          SELECT
-            k.id_local,
-            k.name,
-            k.parent,
-            CASE
-              WHEN pb.full_path = '' THEN k.name
-              ELSE pb.full_path || '|' || k.name
-            END AS full_path
-          FROM AgLibraryKeyword k
-          JOIN path_builder pb ON k.parent = pb.id_local
-          WHERE k.name IS NOT NULL
-        )
-        SELECT
-          id_local,
-          name,
-          parent,
-          full_path
-        FROM path_builder
-        WHERE full_path != ''
-        ORDER BY full_path;
-    """)
-    
-    # Fetch results and build hierarchy dictionary
-    hierarchy = {}
-    for row in cursor.fetchall():
-        id_local, name, parent, full_path = row
-        hierarchy[id_local] = full_path
-        logging.debug(f"Keyword hierarchy: {id_local} -> {full_path}")
-    
-    conn.close()
-    logging.info(f"Loaded {len(hierarchy)} keyword hierarchies")
-    return hierarchy
+            full_path
+            FROM path_builder
+            WHERE full_path != ''
+            ORDER BY full_path;
+        """)
+        
+        rows = cursor.fetchall()
+        conn.close()
+        logging.info(f"fetch_keyword_hierarchy\tSQLite rows fetched: {len(rows)}")  
+
+        # Fetch results and build hierarchy dictionary
+        hierarchy = {}
+        for row in rows:
+            id_local, name, parent, full_path = row
+            hierarchy[id_local] = full_path
+            logging.debug(f"Keyword hierarchy: {id_local} -> {full_path}")
+        
+        return hierarchy
+
+    except sqlite3.OperationalError as e:
+        logging.error(f"fetch_keyword_hierarchy\tOperational error accessing database: {e}")
+    except sqlite3.DatabaseError as e:
+        logging.error(f"fetch_keyword_hierarchy\tDatabase error: {e}")
+    except Exception as e:
+        logging.error(f"fetch_keyword_hierarchy\tUnexpected error: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+    # Return empty dict if an error occurred
+    return {}
 
 # Fetch face data from the Lightroom catalog
 def fetch_face_data(catalog_path: str) -> List[Tuple]:
-    conn = sqlite3.connect(catalog_path)
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT
-            LRF.absolutePath rootFile,
-            LFi.baseName || '.' || LFi.extension fileName, 
-            LFo.pathFromRoot,
-            LFi.extension,
-            LK.name, 
-            LK.id_local keyword_id,
-            LF.tl_x 'left',
-            LF.tl_y 'top', 
-            LF.br_x 'right', 
-            LF.br_y 'bottom',
-            (LF.br_x - LF.tl_x) AS cw,
-            (LF.br_y - LF.tl_y) AS ch,
-            (LF.tl_x + (LF.br_x - LF.tl_x) / 2.0) AS cx,
-            (LF.tl_y + (LF.br_y - LF.tl_y) / 2.0) AS cy
-        FROM
-            AgLibraryKeyword LK
-            INNER JOIN AgLibraryKeywordFace LKF ON LK.id_local = LKF.tag
-            INNER JOIN AgLibraryFace LF ON LKF.face = LF.id_local 
-            INNER JOIN Adobe_images AI ON AI.id_local = LF.image
-            INNER JOIN AgLibraryFile LFi ON AI.rootFile = LFi.id_local
-            INNER JOIN AgLibraryFolder LFo ON LFi.folder = LFo.id_local 
-            INNER JOIN AgLibraryRootFolder LRF ON LFo.rootFolder = LRF.id_local
-        ORDER BY 
-            LRF.absolutePath ASC, 
-            LFi.baseName ASC, 
-            LFi.extension ASC, 
-            LK.name ASC;
-    """)
-    rows = cursor.fetchall()
-    conn.close()
-    logging.debug(f"SQLite rows fetched: {len(rows)}")  
+    try:
+        conn = sqlite3.connect(catalog_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                LRF.absolutePath rootFile,
+                LFi.baseName || '.' || LFi.extension fileName, 
+                LFo.pathFromRoot,
+                LFi.extension,
+                LK.name,
+                LK.id_local,
+                LF.tl_x 'left',
+                LF.tl_y 'top', 
+                LF.br_x 'right', 
+                LF.br_y 'bottom',
+                (LF.br_x - LF.tl_x) AS cw,
+                (LF.br_y - LF.tl_y) AS ch,
+                (LF.tl_x + (LF.br_x - LF.tl_x) / 2.0) AS cx,
+                (LF.tl_y + (LF.br_y - LF.tl_y) / 2.0) AS cy
+            FROM
+                AgLibraryKeyword LK
+                INNER JOIN AgLibraryKeywordFace LKF ON LK.id_local = LKF.tag
+                INNER JOIN AgLibraryFace LF ON LKF.face = LF.id_local 
+                INNER JOIN Adobe_images AI ON AI.id_local = LF.image
+                INNER JOIN AgLibraryFile LFi ON AI.rootFile = LFi.id_local
+                INNER JOIN AgLibraryFolder LFo ON LFi.folder = LFo.id_local 
+                INNER JOIN AgLibraryRootFolder LRF ON LFo.rootFolder = LRF.id_local
+            ORDER BY 
+                LRF.absolutePath ASC, 
+                LFi.baseName ASC, 
+                LFi.extension ASC, 
+                LK.name ASC;
+        """)
+        rows = cursor.fetchall()
+        conn.close()
+        logging.info(f"fetch_face_data\tSQLite rows fetched: {len(rows)}")  
 
-    # Normalize and prepare results
-    results = []
-    for rootPath, fileName, folderPath, ext, name, keyword_id, left, top, right, bottom, cw, ch, cx, cy in rows:
-        full_path = os.path.normpath(os.path.join(rootPath, folderPath, fileName))
-        results.append((full_path, ext, name, keyword_id, left, top, right, bottom, cw, ch, cx, cy))
-        logging.info(f"DB Face:\t{full_path}\t{ext}\t{name}\t{keyword_id}\t{left}\t{top}\t{right}\t{bottom}\t{cw}\t{ch}\t{cx}\t{cy}")
-    return results
+        # Normalize and prepare results
+        results = []
+        for rootPath, fileName, folderPath, ext, name, keyword_id, left, top, right, bottom, cw, ch, cx, cy in rows:
+            full_path = os.path.normpath(os.path.join(rootPath, folderPath, fileName))
+            results.append((full_path, ext, name, keyword_id, left, top, right, bottom, cw, ch, cx, cy, id_local))
+            logging.debug(f"DB Face:\t{full_path}\t{ext}\t{name}\t{keyword_id}\t{left}\t{top}\t{right}\t{bottom}\t{cw}\t{ch}\t{cx}\t{cy}\t{id_local}")
+        return results
+
+    except sqlite3.OperationalError as e:
+        logging.error(f"fetch_face_data\tOperational error accessing database: {e}")
+    except sqlite3.DatabaseError as e:
+        logging.error(f"fetch_face_data\tDatabase error: {e}")
+    except Exception as e:
+        logging.error(f"fetch_face_data\tUnexpected error: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+    # Return empty dict if an error occurred
+    return {}
+
 
 # Check if a face region is a duplicate based on name or area
 def is_duplicate(existing, name, cw, ch, cx, cy):
@@ -165,19 +198,19 @@ def is_duplicate(existing, name, cw, ch, cx, cy):
 def extract_existing_faces(file_path, exiftool_path, prefer_mwg=True) -> List[Tuple[str, float, float, float, float]]:
     def read_faces(target_path):
         cmd = [exiftool_path, '-j', '-struct', target_path]
-        logging.info(f"Running ExifTool read:\t{' '.join(cmd)}")
+        logging.debug(f"Read regions:\t{' '.join(cmd)}")
         result = subprocess.run(cmd,
                                 stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE,
                                 text=True,
                                 timeout=10)
         if result.returncode != 0:
-            logging.error(f"ExifTool error on {target_path}: {result.stderr.strip()}")
+            logging.error(f"extract_existing_faces\tExifTool error on {target_path}: {result.stderr.strip()}")
             return []
 
         data_list = json.loads(result.stdout)
         if not data_list:
-            logging.error(f"ExifTool returned no JSON for {target_path}")
+            logging.error(f"extract_existing_faces\tExifTool returned no JSON for {target_path}")
             return []
 
         data = data_list[0]
@@ -231,7 +264,7 @@ def extract_existing_faces(file_path, exiftool_path, prefer_mwg=True) -> List[Tu
     # If no metadata and sidecar exists, try .xmp
     sidecar = os.path.splitext(file_path)[0] + ".xmp"
     if os.path.isfile(sidecar):
-        logging.info(f"Trying to read sidecar XMP for {file_path}")
+        logging.info(f"Read XMP sidecar for {file_path}")
         return read_faces(sidecar)
 
     return []
@@ -241,14 +274,14 @@ def extract_existing_keywords(file_path, exiftool_path) -> List[str]:
     # Function to read keywords from metadata using ExifTool
     def read_keywords(target_path):
         cmd = [exiftool_path, '-j', '-Keywords', '-Subject', '-HierarchicalSubject', target_path]
-        logging.debug(f"Running ExifTool keyword read:\t{' '.join(cmd)}")
+        logging.debug(f"Read keywords:\t{' '.join(cmd)}")
         result = subprocess.run(cmd,
                                 stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE,
                                 text=True,
                                 timeout=10)
         if result.returncode != 0:
-            logging.error(f"ExifTool error reading keywords from {target_path}: {result.stderr.strip()}")
+            logging.error(f"extract_existing_keywords\tExifTool error reading keywords from {target_path}: {result.stderr.strip()}")
             return []
 
         try:
@@ -270,7 +303,7 @@ def extract_existing_keywords(file_path, exiftool_path) -> List[str]:
             
             return list(existing_keywords)
         except json.JSONDecodeError:
-            logging.error(f"Failed to parse JSON from ExifTool keyword output for {target_path}")
+            logging.error(f"extract_existing_keywords\tFailed to parse JSON from ExifTool keyword output for {target_path}")
             return []
 
     # First try original file
@@ -281,7 +314,7 @@ def extract_existing_keywords(file_path, exiftool_path) -> List[str]:
     # If no metadata and sidecar exists, try .xmp
     sidecar = os.path.splitext(file_path)[0] + ".xmp"
     if os.path.isfile(sidecar):
-        logging.debug(f"Trying to read keywords from sidecar XMP for {file_path}")
+        logging.info(f"Read XMP sidecar for {file_path}")
         return read_keywords(sidecar)
 
     return []
@@ -317,20 +350,22 @@ def write_xmp_region(image_path, name, x, y, w, h, dry_run: bool, exiftool_path:
         ]
 
     args.append(target)
-    logging.info(f"Running ExifTool write:\t{' '.join(args)}")
+    logging.info(f"Write Region:\t{' '.join(args)}")
 
     if not dry_run:
         try:
-            subprocess.run(args,
+            result=subprocess.run(args,
                            stdout=subprocess.PIPE,
                            stderr=subprocess.PIPE,
                            text=True,
                            timeout=10)
+            if result.returncode != 0:
+                logging.error(f"write_xmp_region\tExifTool error writing regions to {target}: {result.stderr.strip()}")
         except Exception as e:
-            logging.error(f"Error writing to {image_path}: {str(e)}")
+            logging.error(f"write_xmp_region\tError writing to {image_path}: {str(e)}")
 
 # Write hierarchical keyword to metadata using ExifTool
-def write_hierarchical_keyword(image_path, hierarchical_keyword: str, dry_run: bool, exiftool_path: str, use_sidecar: bool):
+def write_hierarchical_keyword(image_path, hierarchical_keyword: str, keyword: str,dry_run: bool, exiftool_path: str, use_sidecar: bool):
     
     args = [exiftool_path, '-overwrite_original']
     target = image_path
@@ -345,17 +380,17 @@ def write_hierarchical_keyword(image_path, hierarchical_keyword: str, dry_run: b
             f'-Keywords+={hierarchical_keyword}',
             f'-Subject+={hierarchical_keyword}',
             f'-HierarchicalSubject+={hierarchical_keyword}',
-            '-o', sidecar_path
+            sidecar_path
         ]
     else:
         args += [
-            f'-Keywords+={hierarchical_keyword}',
-            f'-Subject+={hierarchical_keyword}',
+            f'-Keywords+={keyword}',
+            f'-Subject+={keyword}',
             f'-HierarchicalSubject+={hierarchical_keyword}'
         ]
 
     args.append(target)
-    logging.info(f"Running ExifTool keyword write:\t{' '.join(args)}")
+    logging.debug(f"Write keyword:\t{' '.join(args)}")
 
     if not dry_run:
         try:
@@ -365,9 +400,9 @@ def write_hierarchical_keyword(image_path, hierarchical_keyword: str, dry_run: b
                                     text=True,
                                     timeout=10)
             if result.returncode != 0:
-                logging.error(f"Error writing keyword to {image_path}: {result.stderr.strip()}")
+                logging.error(f"write_hierarchical_keyword\tError writing keyword to {image_path}: {result.stderr.strip()}")
         except Exception as e:
-            logging.error(f"Error writing keyword to {image_path}: {str(e)}")
+            logging.error(f"write_hierarchical_keyword\tError writing keyword to {image_path}: {str(e)}")
 
 def main():
     args = parse_args()
@@ -376,17 +411,21 @@ def main():
     logging.warning(f'Session {session_id} started')
     
     # Load keyword hierarchy if hierarchical tags are requested
+    logging.warning(f'Loading keyword hierarchy from {args.catalog}')
     keyword_hierarchy = {}
     if args.write_hierarchical_tags:
         keyword_hierarchy = fetch_keyword_hierarchy(args.catalog)
         logging.warning(f'Loaded {len(keyword_hierarchy)} keyword hierarchies')
     
+    # Fetch face data from the catalog
+    logging.warning(f'Fetching face data from {args.catalog}')
     face_data = fetch_face_data(args.catalog)
     logging.warning(f'{len(face_data)} face regions found in {args.catalog}')
     old_full_path = ""
     existing_faces = []
     existing_keywords = []
 
+    # Process each face region and metadata
     for row in tqdm(face_data, desc="Processing images"):
         full_path, fmt, name, keyword_id, left, top, right, bottom, cw, ch, cx, cy = row
         if full_path != old_full_path:
@@ -435,18 +474,19 @@ def main():
                 use_sidecar = fmt.lower() in RAW_FORMATS
                 log_type = "sidecar" if use_sidecar else "embedded"
                 
-                write_hierarchical_keyword(full_path, hierarchical_keyword,
+                write_hierarchical_keyword(full_path, hierarchical_keyword, 
+                                         name,
                                          dry_run=not args.write,
                                          exiftool_path=args.exiftool_path,
                                          use_sidecar=use_sidecar)
                 
                 action = "Wrote" if args.write else "Simulated write"
-                logging.warning(f"{action} ({log_type}) hierarchical keyword\t'{hierarchical_keyword}'\tto\t{full_path}")
+                logging.warning(f"{action} ({log_type}) keyword\t'{name}'\t hierarchical keyword:\t'{hierarchical_keyword}'\tto\t{full_path}")
                 
                 # Add to existing keywords to avoid re-writing in same session
                 existing_keywords.append(hierarchical_keyword)
             else:
-                logging.info(f"Hierarchical keyword '{hierarchical_keyword}' already exists in {full_path}")
+                logging.warning(f"Existing:\t{hierarchical_keyword}")
 
     logging.warning(f"Session {session_id} complete")
 
