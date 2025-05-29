@@ -36,6 +36,7 @@ import io
 from tqdm import tqdm
 from datetime import datetime
 from typing import List, Tuple, Dict
+from collections import defaultdict
 
 # RAW formats that typically require XMP sidecars
 RAW_FORMATS = {'cr2', 'cr3', 'nef', 'arw', 'rw2', 'orf', 'raf', 'dng', 'pef', 'sr2'}
@@ -198,215 +199,342 @@ def is_duplicate(existing, name, cw, ch, cx, cy):
             return 'area'
     return None
 
-# Extract existing face regions from image metadata using ExifTool
-def extract_existing_faces(file_path, exiftool_path, prefer_mwg=True) -> List[Tuple[str, float, float, float, float]]:
-    def read_faces(target_path):
-        cmd = [exiftool_path, '-j', '-struct', target_path]
-        logging.debug(f"Read regions:\t{' '.join(cmd)}")
-        result = subprocess.run(cmd,
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE,
-                                text=True,
-                                timeout=10)
-        if result.returncode != 0:
-            logging.error(f"extract_existing_faces\tExifTool error on {target_path}: {result.stderr.strip()}")
-            return []
-
-        data_list = json.loads(result.stdout)
-        if not data_list:
-            logging.error(f"extract_existing_faces\tExifTool returned no JSON for {target_path}")
-            return []
-
-        data = data_list[0]
-        existing = []
-
-        # Flat keys
-        names = data.get('RegionName')
-        types = data.get('RegionType')
-        xs = data.get('RegionAreaX')
-        ys = data.get('RegionAreaY')
-        ws = data.get('RegionAreaW')
-        hs = data.get('RegionAreaH')
-        if names and types and xs and ys and ws and hs:
-            for name, type_, x, y, w, h in zip(names, types, xs, ys, ws, hs):
-                if type_ != 'Face':
-                    continue
-                existing.append((name, float(x), float(y), float(w), float(h)))
-            return existing
-
-        # Nested region list
-        region_info = data.get('RegionInfo')
-        if isinstance(region_info, dict):
-            region_list = region_info.get('RegionList')
-            if isinstance(region_list, list):
-                for reg in region_list:
-                    name = reg.get('RegionName') or reg.get('Name')
-                    type_ = reg.get('RegionType') or reg.get('Type')
-                    x = reg.get('RegionAreaX')
-                    y = reg.get('RegionAreaY')
-                    w = reg.get('RegionAreaW')
-                    h = reg.get('RegionAreaH')
-                    if None in (x, y, w, h):
-                        area = reg.get('Area')
-                        if isinstance(area, dict):
-                            x = area.get('X')
-                            y = area.get('Y')
-                            w = area.get('W')
-                            h = area.get('H')
-                    if None in (name, type_, x, y, w, h):
-                        continue
-                    if type_ != 'Face':
-                        continue
-                    existing.append((name, float(x), float(y), float(w), float(h)))
-        return existing
-
-    # First try original file
-    faces = read_faces(file_path)
-    if faces:
-        return faces
-
-    # If no metadata and sidecar exists, try .xmp
-    sidecar = os.path.splitext(file_path)[0] + ".xmp"
-    if os.path.isfile(sidecar):
-        logging.info(f"Read XMP sidecar for {file_path}")
-        return read_faces(sidecar)
-
-    return []
-
-# Extract existing keywords from image metadata using ExifTool
-def extract_existing_keywords(file_path, exiftool_path) -> List[str]:
-    # Function to read keywords from metadata using ExifTool
-    def read_keywords(target_path):
-        cmd = [exiftool_path, '-j', '-Keywords', '-Subject', '-HierarchicalSubject', target_path]
-        logging.debug(f"Read keywords:\t{' '.join(cmd)}")
-        result = subprocess.run(cmd,
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE,
-                                text=True,
-                                timeout=10)
-        if result.returncode != 0:
-            logging.error(f"extract_existing_keywords\tExifTool error reading keywords from {target_path}: {result.stderr.strip()}")
-            return []
-
+# Optimized function to extract both face regions and keywords in a single ExifTool call
+def extract_existing_metadata(file_path, exiftool_path) -> Tuple[List[Tuple[str, float, float, float, float]], List[str], List[str], List[str]]:
+    """
+    Extract existing face regions and keywords from image metadata in a single ExifTool call.
+    
+    Returns:
+        Tuple of (faces, keywords, subject, hierarchical_subject)
+        - faces: List of tuples (name, x, y, w, h) for face regions
+        - keywords: List of keyword strings
+        - subject: List of subject strings  
+        - hierarchical_subject: List of hierarchical subject strings
+    """
+    def read_all_metadata(target_path):
+        # Single ExifTool call to get all needed metadata
+        cmd = [exiftool_path, '-j', '-struct', 
+               '-Keywords', '-Subject', '-HierarchicalSubject',
+               # Face region fields
+               '-RegionName', '-RegionType', '-RegionAreaX', '-RegionAreaY', 
+               '-RegionAreaW', '-RegionAreaH', '-RegionInfo',
+               target_path]
+        
+        logging.debug(f"Read all metadata:\t{' '.join(cmd)}")
+        
         try:
+            result = subprocess.run(cmd,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE,
+                                    text=True,
+                                    timeout=15)  # Increased timeout for single comprehensive call
+            
+            if result.returncode != 0:
+                logging.error(f"extract_existing_metadata\tExifTool error on {target_path}: {result.stderr.strip()}")
+                return [], [], [], []
+
             data_list = json.loads(result.stdout)
             if not data_list:
-                return []
-            
+                logging.error(f"extract_existing_metadata\tExifTool returned no JSON for {target_path}")
+                return [], [], [], []
+
             data = data_list[0]
-            existing_keywords = set()
             
-            # Check various keyword fields
-            for field in ['Keywords', 'Subject', 'HierarchicalSubject']:
-                values = data.get(field)
-                if values:
-                    if isinstance(values, list):
-                        existing_keywords.update(values)
-                    elif isinstance(values, str):
-                        existing_keywords.add(values)
+            # Extract face regions
+            existing_faces = extract_faces_from_data(data)
             
-            return list(existing_keywords)
+            # Extract keywords
+            keywords = data.get('Keywords', [])
+            subject = data.get('Subject', [])
+            hierarchical = data.get('HierarchicalSubject', [])
+            
+            # Normalize keyword fields to lists
+            if isinstance(keywords, str):
+                keywords = [keywords]
+            if isinstance(subject, str):
+                subject = [subject]
+            if isinstance(hierarchical, str):
+                hierarchical = [hierarchical]
+                
+            return existing_faces, keywords or [], subject or [], hierarchical or []
+            
+        except subprocess.TimeoutExpired:
+            logging.error(f"extract_existing_metadata\tExifTool timeout on {target_path}")
+            return [], [], [], []
         except json.JSONDecodeError:
-            logging.error(f"extract_existing_keywords\tFailed to parse JSON from ExifTool keyword output for {target_path}")
-            return []
+            logging.error(f"extract_existing_metadata\tFailed to parse JSON from ExifTool output for {target_path}")
+            return [], [], [], []
+        except Exception as e:
+            logging.error(f"extract_existing_metadata\tUnexpected error reading {target_path}: {str(e)}")
+            return [], [], [], []
 
     # First try original file
-    keywords = read_keywords(file_path)
-    if keywords:
-        return keywords
+    faces, keywords, subject, hierarchical = read_all_metadata(file_path)
+    if faces or keywords or subject or hierarchical:
+        return faces, keywords, subject, hierarchical
 
     # If no metadata and sidecar exists, try .xmp
     sidecar = os.path.splitext(file_path)[0] + ".xmp"
     if os.path.isfile(sidecar):
         logging.info(f"Read XMP sidecar for {file_path}")
-        return read_keywords(sidecar)
+        return read_all_metadata(sidecar)
 
-    return []
+    return [], [], [], []
 
-# Write face region data to metadata using ExifTool
-def write_xmp_region(image_path, name, x, y, w, h, dry_run: bool, exiftool_path: str, use_sidecar: bool):
-    args = [exiftool_path, '-overwrite_original']
-    target = image_path
 
-    # If the image is a RAW format, we will use a sidecar XMP file
-    if use_sidecar:
-        sidecar_path = os.path.splitext(image_path)[0] + ".xmp"
-        args += [
-            '-use', 'MWG',
-            '-tagsFromFile', '@',
-            '-all:all',
-            f'-XMP-mwg-rs:RegionName+={name}',
-            f'-XMP-mwg-rs:RegionType+=Face',
-            f'-XMP-mwg-rs:RegionAreaX+={x}',
-            f'-XMP-mwg-rs:RegionAreaY+={y}',
-            f'-XMP-mwg-rs:RegionAreaW+={w}',
-            f'-XMP-mwg-rs:RegionAreaH+={h}',
-            sidecar_path
-        ]
-    else:
-        args += [
-            f'-RegionName+={name}',
-            f'-RegionType+=Face',
-            f'-RegionAreaX+={x}',
-            f'-RegionAreaY+={y}',
-            f'-RegionAreaW+={w}',
-            f'-RegionAreaH+={h}'
-        ]
+def extract_faces_from_data(data) -> List[Tuple[str, float, float, float, float]]:
+    """
+    Extract face regions from ExifTool JSON data.
+    
+    Args:
+        data: JSON data from ExifTool
+        
+    Returns:
+        List of tuples (name, x, y, w, h) for face regions
+    """
+    existing_faces = []
 
-    args.append(target)
-    logging.info(f"Write Region:\t{' '.join(args)}")
+    # Try flat keys first (some formats store region data as flat arrays)
+    names = data.get('RegionName')
+    types = data.get('RegionType')
+    xs = data.get('RegionAreaX')
+    ys = data.get('RegionAreaY')
+    ws = data.get('RegionAreaW')
+    hs = data.get('RegionAreaH')
+    
+    if names and types and xs and ys and ws and hs:
+        # Ensure all are lists for consistent processing
+        if not isinstance(names, list):
+            names = [names]
+        if not isinstance(types, list):
+            types = [types]
+        if not isinstance(xs, list):
+            xs = [xs]
+        if not isinstance(ys, list):
+            ys = [ys]
+        if not isinstance(ws, list):
+            ws = [ws]
+        if not isinstance(hs, list):
+            hs = [hs]
+            
+        for name, type_, x, y, w, h in zip(names, types, xs, ys, ws, hs):
+            if type_ != 'Face':
+                continue
+            try:
+                existing_faces.append((name, float(x), float(y), float(w), float(h)))
+            except (ValueError, TypeError):
+                logging.warning(f"extract_faces_from_data\tInvalid face region data: {name}, {x}, {y}, {w}, {h}")
+                continue
+        return existing_faces
 
-    if not dry_run:
-        try:
-            result=subprocess.run(args,
-                           stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE,
-                           text=True,
-                           timeout=10)
-            if result.returncode != 0:
-                logging.error(f"write_xmp_region\tExifTool error writing regions to {target}: {result.stderr.strip()}")
-        except Exception as e:
-            logging.error(f"write_xmp_region\tError writing to {image_path}: {str(e)}")
+    # Try nested region structure (XMP format)
+    region_info = data.get('RegionInfo')
+    if isinstance(region_info, dict):
+        region_list = region_info.get('RegionList')
+        if isinstance(region_list, list):
+            for reg in region_list:
+                if not isinstance(reg, dict):
+                    continue
+                    
+                name = reg.get('RegionName') or reg.get('Name')
+                type_ = reg.get('RegionType') or reg.get('Type')
+                
+                # Get coordinates - try direct fields first
+                x = reg.get('RegionAreaX')
+                y = reg.get('RegionAreaY')
+                w = reg.get('RegionAreaW')
+                h = reg.get('RegionAreaH')
+                
+                # If not found, try nested Area structure
+                if None in (x, y, w, h):
+                    area = reg.get('Area')
+                    if isinstance(area, dict):
+                        x = area.get('X')
+                        y = area.get('Y')
+                        w = area.get('W')
+                        h = area.get('H')
+                
+                # Skip if we don't have all required data
+                if None in (name, type_, x, y, w, h):
+                    continue
+                if type_ != 'Face':
+                    continue
+                    
+                try:
+                    existing_faces.append((name, float(x), float(y), float(w), float(h)))
+                except (ValueError, TypeError):
+                    logging.warning(f"extract_faces_from_data\tInvalid nested face region data: {name}, {x}, {y}, {w}, {h}")
+                    continue
+    
+    return existing_faces
 
-# Write hierarchical keyword to metadata using ExifTool
-def write_hierarchical_keyword(image_path, hierarchical_keyword: str, keyword: str,dry_run: bool, exiftool_path: str, use_sidecar: bool):
+# Batch write all metadata to image using single ExifTool call
+def write_metadata_batch(image_path, face_regions: List[Tuple], keywords_to_add: Dict[str, List[str]], dry_run: bool, exiftool_path: str, use_sidecar: bool):
+    """
+    Write all face regions and keywords to image in a single ExifTool call.
+    
+    Args:
+        image_path: Path to the image file
+        face_regions: List of tuples (name, x, y, w, h) for face regions to write
+        keywords_to_add: Dict with keys 'keywords', 'subject', 'hierarchical' containing lists of values to add
+        dry_run: If True, don't actually write metadata
+        exiftool_path: Path to ExifTool executable
+        use_sidecar: If True, write to XMP sidecar file
+    """
+    if not face_regions and not any(keywords_to_add.values()):
+        return
     
     args = [exiftool_path, '-overwrite_original']
     target = image_path
-
-    # If the image is a RAW format, we will use a sidecar XMP file
+    
+    # If using sidecar, set up XMP sidecar arguments
     if use_sidecar:
         sidecar_path = os.path.splitext(image_path)[0] + ".xmp"
         args += [
             '-use', 'MWG',
             '-tagsFromFile', '@',
-            '-all:all',
-            f'-Keywords+={hierarchical_keyword}',
-            f'-Subject+={hierarchical_keyword}',
-            f'-HierarchicalSubject+={hierarchical_keyword}',
-            sidecar_path
+            '-all:all'
         ]
-    else:
-        args += [
-            f'-Keywords+={keyword}',
-            f'-Subject+={keyword}',
-            f'-HierarchicalSubject+={hierarchical_keyword}'
-        ]
-
+        target = sidecar_path
+    
+    # Add face region arguments
+    for name, x, y, w, h in face_regions:
+        if use_sidecar:
+            args += [
+                f'-XMP-mwg-rs:RegionName+={name}',
+                f'-XMP-mwg-rs:RegionType+=Face',
+                f'-XMP-mwg-rs:RegionAreaX+={x}',
+                f'-XMP-mwg-rs:RegionAreaY+={y}',
+                f'-XMP-mwg-rs:RegionAreaW+={w}',
+                f'-XMP-mwg-rs:RegionAreaH+={h}'
+            ]
+        else:
+            args += [
+                f'-RegionName+={name}',
+                f'-RegionType+=Face',
+                f'-RegionAreaX+={x}',
+                f'-RegionAreaY+={y}',
+                f'-RegionAreaW+={w}',
+                f'-RegionAreaH+={h}'
+            ]
+    
+    # Add keyword arguments for each field independently
+    for simple_keyword in keywords_to_add.get('keywords', []):
+        field_prefix = '-XMP-dc:' if use_sidecar else '-'
+        args.append(f'{field_prefix}Keywords+={simple_keyword}')
+    
+    for subject_keyword in keywords_to_add.get('subject', []):
+        field_prefix = '-XMP-dc:' if use_sidecar else '-'
+        args.append(f'{field_prefix}Subject+={subject_keyword}')
+        
+    for hierarchical_keyword in keywords_to_add.get('hierarchical', []):
+        field_prefix = '-XMP-lr:' if use_sidecar else '-'
+        args.append(f'{field_prefix}HierarchicalSubject+={hierarchical_keyword}')
+    
     args.append(target)
-    logging.debug(f"Write keyword:\t{' '.join(args)}")
-
+    logging.info(f"Batch write:\t{' '.join(args)}")
+    
     if not dry_run:
         try:
             result = subprocess.run(args,
                                     stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE,
                                     text=True,
-                                    timeout=10)
+                                    timeout=30)
             if result.returncode != 0:
-                logging.error(f"write_hierarchical_keyword\tError writing keyword to {image_path}: {result.stderr.strip()}")
+                logging.error(f"write_metadata_batch\tExifTool error writing to {target}: {result.stderr.strip()}")
+            else:
+                logging.debug(f"write_metadata_batch\tSuccessfully wrote metadata to {target}")
         except Exception as e:
-            logging.error(f"write_hierarchical_keyword\tError writing keyword to {image_path}: {str(e)}")
+            logging.error(f"write_metadata_batch\tError writing to {image_path}: {str(e)}")
+
+# Updated process_file_keywords function to use the optimized metadata reading
+def process_file_keywords(full_path, face_list, args, keyword_hierarchy):
+    """Process a single file's keywords and faces with optimized single metadata read"""
+    
+    if not os.path.isfile(full_path):
+        logging.error(f"File not found:\t{full_path}")
+        return
+    
+    # Get file format from first face entry
+    fmt = face_list[0][0]
+    use_sidecar = fmt.lower() in RAW_FORMATS
+    log_type = "sidecar" if use_sidecar else "embedded"
+    
+    # Single call to read all existing metadata
+    existing_faces, existing_keywords, existing_subject, existing_hierarchical = extract_existing_metadata(
+        full_path, args.exiftool_path
+    )
+    
+    # Collect new face regions and keywords to write
+    new_face_regions = []
+    keywords_to_add = {
+        'keywords': [],
+        'subject': [], 
+        'hierarchical': []
+    }
+    
+    for fmt, name, keyword_id, left, top, right, bottom, cw, ch, cx, cy in face_list:
+        logging.warning(f"Processing\t{name}")
+        
+        # Check for duplicate faces
+        dup_type = is_duplicate(existing_faces, name, cw, ch, cx, cy)
+        if dup_type:
+            logging.warning(f"Duplicate\t({dup_type}):\t{name}")
+        else:
+            # Add face region to batch
+            new_face_regions.append((name, cx, cy, cw, ch))
+            logging.warning(f"Queued face\t'{name}'\tfor batch write")
+        
+        # Handle hierarchical keywords independently
+        if args.write_hierarchical_tags and keyword_id in keyword_hierarchy:
+            hierarchical_keyword = keyword_hierarchy[keyword_id]
+            simple_keyword = hierarchical_keyword.split('|')[-1] if '|' in hierarchical_keyword else hierarchical_keyword
+            
+            # Check Keywords field independently
+            if simple_keyword not in existing_keywords and simple_keyword not in keywords_to_add['keywords']:
+                keywords_to_add['keywords'].append(simple_keyword)
+                existing_keywords.append(simple_keyword)  # Prevent duplicates within same batch
+                logging.warning(f"Queued Keywords field\t'{simple_keyword}'\tfor batch write")
+            else:
+                logging.warning(f"Existing in Keywords field:\t{simple_keyword}")
+            
+            # Check Subject field independently  
+            if simple_keyword not in existing_subject and simple_keyword not in keywords_to_add['subject']:
+                keywords_to_add['subject'].append(simple_keyword)
+                existing_subject.append(simple_keyword)  # Prevent duplicates within same batch
+                logging.warning(f"Queued Subject field\t'{simple_keyword}'\tfor batch write")
+            else:
+                logging.warning(f"Existing in Subject field:\t{simple_keyword}")
+                
+            # Check HierarchicalSubject field independently
+            if hierarchical_keyword not in existing_hierarchical and hierarchical_keyword not in keywords_to_add['hierarchical']:
+                keywords_to_add['hierarchical'].append(hierarchical_keyword)
+                existing_hierarchical.append(hierarchical_keyword)  # Prevent duplicates within same batch
+                logging.warning(f"Queued HierarchicalSubject field\t'{hierarchical_keyword}'\tfor batch write")
+            else:
+                logging.warning(f"Existing in HierarchicalSubject field:\t{hierarchical_keyword}")
+    
+    # Perform batch write if there's anything to write
+    total_keywords = sum(len(v) for v in keywords_to_add.values())
+    if new_face_regions or total_keywords > 0:
+        write_metadata_batch(
+            full_path, 
+            new_face_regions, 
+            keywords_to_add,
+            dry_run=not args.write,
+            exiftool_path=args.exiftool_path,
+            use_sidecar=use_sidecar
+        )
+        
+        action = "Wrote" if args.write else "Simulated write"
+        face_count = len(new_face_regions)
+        logging.warning(f"{action} ({log_type}) batch: {face_count} faces, {total_keywords} total keywords to {full_path}")
+        
+        # Log breakdown by field
+        for field, values in keywords_to_add.items():
+            if values:
+                logging.warning(f"  {field}: {len(values)} keywords")
 
 def main():
     args = parse_args()
@@ -426,72 +554,18 @@ def main():
         logging.warning(f'Fetching face data from {args.catalog}')
         face_data = fetch_face_data(args.catalog)
         logging.warning(f'{len(face_data)} face regions found in {args.catalog}')
-        old_full_path = ""
-        existing_faces = []
-        existing_keywords = []
-
-        # Process each face region and metadata
-        for row in tqdm(face_data, desc="Processing images"):
+        
+        # Group face data by file path for batch processing
+        file_data = defaultdict(list)
+        for row in face_data:
             full_path, fmt, name, keyword_id, left, top, right, bottom, cw, ch, cx, cy = row
-            if full_path != old_full_path:
-                logging.warning(f"======")
-                logging.warning(f"File:\t{full_path}\tFormat:\t{fmt}")
-            else:
-                logging.warning(f"------")
-            if not os.path.isfile(full_path):
-                logging.error(f"File not found:\t{full_path}")
-                continue
-            else:
-                logging.warning(f"Processing\t{name}")
-
-            # Only re-read existing data when we encounter a new file
-            if full_path != old_full_path:
-                old_full_path = full_path
-                existing_faces = []
-                existing_faces = extract_existing_faces(full_path, args.exiftool_path)
-                existing_keywords = []
-                if args.write_hierarchical_tags:
-                    existing_keywords = extract_existing_keywords(full_path, args.exiftool_path)
-
-            # Check for duplicate faces
-            dup_type = is_duplicate(existing_faces, name, cw, ch, cx, cy)
-            if dup_type:
-                logging.warning(f"Duplicate\t({dup_type}):\t{name}")
-            else:
-                # Write face region data
-                use_sidecar = fmt.lower() in RAW_FORMATS
-                log_type = "sidecar" if use_sidecar else "embedded"
-
-                write_xmp_region(full_path, name, cx, cy, cw, ch,
-                                dry_run=not args.write,
-                                exiftool_path=args.exiftool_path,
-                                use_sidecar=use_sidecar)
-
-                action = "Wrote" if args.write else "Simulated write"
-                logging.warning(f"{action} ({log_type}) face\t'{name}'\tto\t{full_path} ")
-
-            # Write hierarchical keyword tag if requested and not already present
-            if args.write_hierarchical_tags and keyword_id in keyword_hierarchy:
-                hierarchical_keyword = keyword_hierarchy[keyword_id]
-                
-                # Check if this hierarchical keyword already exists
-                if hierarchical_keyword not in existing_keywords:
-                    use_sidecar = fmt.lower() in RAW_FORMATS
-                    log_type = "sidecar" if use_sidecar else "embedded"
-                    
-                    write_hierarchical_keyword(full_path, hierarchical_keyword, 
-                                            name,
-                                            dry_run=not args.write,
-                                            exiftool_path=args.exiftool_path,
-                                            use_sidecar=use_sidecar)
-                    
-                    action = "Wrote" if args.write else "Simulated write"
-                    logging.warning(f"{action} ({log_type}) keyword\t'{name}'\t hierarchical keyword:\t'{hierarchical_keyword}'\tto\t{full_path}")
-                    
-                    # Add to existing keywords to avoid re-writing in same session
-                    existing_keywords.append(hierarchical_keyword)
-                else:
-                    logging.warning(f"Existing:\t{hierarchical_keyword}")
+            file_data[full_path].append((fmt, name, keyword_id, left, top, right, bottom, cw, ch, cx, cy))
+        
+        # Process each file
+        for full_path, face_list in tqdm(file_data.items(), desc="Processing images"):
+            logging.warning(f"======")
+            logging.warning(f"File:\t{full_path}")
+            process_file_keywords(full_path, face_list, args, keyword_hierarchy)
 
     # Run the main processing function
     if args.profile:
