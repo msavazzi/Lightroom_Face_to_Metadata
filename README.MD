@@ -28,7 +28,20 @@ Options are:
     --profile                           Enable profiling and save output to specified file (default: profile.prof)
     --batch-size                        Database query batch size (default: 1000)'
 
-  
+Usage Examples:
+**Basic usage (dry run):**
+    python optimized_script.py --catalog /path/to/catalog.lrcat
+
+**Write mode with hierarchical keywords:**
+    python optimized_script.py --catalog /path/to/catalog.lrcat --write --write-hierarchical-tags
+
+**Performance tuning for large catalogs:**
+    python optimized_script.py --catalog /path/to/catalog.lrcat --batch-size 2000 --write
+
+**With profiling:**
+    python optimized_script.py --catalog /path/to/catalog.lrcat --profile performance.prof
+
+
 *This script is intended for educational purposes only. Use at your own risk.*
 *It is recommended to backup your Lightroom catalog and images before running this script.*
 *This script is provided "as is" without warranty of any kind, either expressed or implied.*
