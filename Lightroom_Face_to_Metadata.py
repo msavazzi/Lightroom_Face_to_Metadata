@@ -1,9 +1,27 @@
 # Script to sync Lightroom face data to image metadata using ExifTool
 # Based on the database schema from: Lightroom Classic 14.3
-# Optimized version with improved SQL queries and database access
+# Needed as Lightroom does not write face data to metadata nor it provides a way to export it via Plugin API
 # Copyright (c) 2025, Massimo Savazzi
 # All rights reserved.
 # This script is licensed under the MIT License.
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal 
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+# This script is intended for educational purposes only. Use at your own risk.  
+# It is recommended to backup your Lightroom catalog and images before running this script.
+# This script is provided "as is" without warranty of any kind, either expressed or implied.    
+# The author is not responsible for any damage or loss of data that may occur as a result of using this script.
 
 import os       
 import sqlite3
@@ -60,6 +78,7 @@ class DatabasePool:
 # Global database pool instance
 db_pool = None
 
+# Function to parse command line arguments
 def parse_args():
     parser = argparse.ArgumentParser(description="Sync Lightroom face data to image metadata.")
     parser.add_argument('--catalog', required=True, help='Path to Lightroom .lrcat file')
@@ -72,6 +91,7 @@ def parse_args():
     parser.add_argument('--batch-size', type=int, default=1000, help='Database query batch size (default: 1000)')
     return parser.parse_args()
 
+# Function to initialize logging
 def init_logging(log_path: str, session_id: str, log_level: str):
     logging.basicConfig(
         filename=log_path,
@@ -80,23 +100,22 @@ def init_logging(log_path: str, session_id: str, log_level: str):
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
-# Optimized keyword hierarchy extraction using prepared statements and indexing hints.
-def fetch_keyword_hierarchy(catalog_path: str) -> Dict[int, str]:
-
+#    Fetch keyword hierarchy with batch processing for memory efficiency.
+#    Uses recursive CTE with batched result processing to handle large keyword sets.
+def fetch_keyword_hierarchy(catalog_path: str, batch_size: int = 1000) -> Dict[int, str]:
     global db_pool
     hierarchy = {}
+    total_processed = 0
     
     try:
         with db_pool.get_connection() as conn:
             cursor = conn.cursor()
             
-            # First, ensure we have proper indexes for performance
-            #cursor.execute("""
-            #    CREATE INDEX IF NOT EXISTS idx_keyword_parent ON AgLibraryKeyword(parent, id_local);
-            #""")
-            #cursor.execute("""
-            #    CREATE INDEX IF NOT EXISTS idx_keyword_name ON AgLibraryKeyword(name, id_local);
-            #""")
+            # First, get total count for progress tracking
+            cursor.execute("SELECT COUNT(*) FROM AgLibraryKeyword WHERE name IS NOT NULL")
+            total_keywords = cursor.fetchone()[0]
+            if logging.getLogger().isEnabledFor(logging.INFO):
+                logging.info(f"Total keywords to process:\t{total_keywords}")
             
             # Optimized recursive CTE with better performance hints
             cursor.execute("""
@@ -133,47 +152,70 @@ def fetch_keyword_hierarchy(catalog_path: str) -> Dict[int, str]:
                 ORDER BY level, full_path;
             """)
             
-            rows = cursor.fetchall()
-            if logging.getLogger().isEnabledFor(logging.INFO):
-                logging.info(f"fetch_keyword_hierarchy\tSQLite rows fetched: {len(rows)}")
+            # Process results in batches to manage memory
+            batch_count = 0
+            while True:
+                batch = cursor.fetchmany(batch_size)
+                if not batch:
+                    break
+                
+                batch_count += 1
+                batch_processed = 0
+                
+                # Build hierarchy dictionary with better memory efficiency
+                for id_local, full_path in batch:
+                    hierarchy[id_local] = full_path
+                    batch_processed += 1
+                    total_processed += 1
+                    
+                    if logging.getLogger().isEnabledFor(logging.DEBUG):
+                        logging.debug(f"Keyword hierarchy:\t{id_local}\t->\t{full_path}")
+                
+                if logging.getLogger().isEnabledFor(logging.INFO):
+                    logging.info(f"Batch {batch_count}:\tprocessed {batch_processed}\tkeywords (total: {total_processed})")
+                
+                # Optional: Force garbage collection for large batches
+                if batch_count % 10 == 0:
+                    import gc
+                    gc.collect()
             
-            # Build hierarchy dictionary with better memory efficiency
-            for id_local, full_path in rows:
-                hierarchy[id_local] = full_path
-                if logging.getLogger().isEnabledFor(logging.DEBUG):
-                    logging.debug(f"Keyword hierarchy: {id_local} -> {full_path}")
+            if logging.getLogger().isEnabledFor(logging.INFO):
+                logging.info(f"Completed:\t{total_processed} keyword hierarchies loaded")
             
     except sqlite3.Error as e:
-        logging.error(f"fetch_keyword_hierarchy\tDatabase error: {e}")
+        logging.error(f"fetch_keyword_hierarchy\tDatabase error:\t{e}")
         return {}
     except Exception as e:
-        logging.error(f"fetch_keyword_hierarchy\tUnexpected error: {e}")
+        logging.error(f"fetch_keyword_hierarchy\tUnexpected error:\t{e}")
         return {}
     
     return hierarchy
 
-#Optimized face data fetching with proper indexing and batch processing.
+# Optimized face data fetching with proper indexing and batch processing.
 def fetch_face_data_batch(catalog_path: str, batch_size: int = 1000) -> List[Tuple]:
-
     global db_pool
     results = []
+    total_processed = 0
     
     try:
         with db_pool.get_connection() as conn:
             cursor = conn.cursor()
             
-            # Create indexes for better performance if they don't exist
-            #indexes = [
-            #    "CREATE INDEX IF NOT EXISTS idx_keywordface_tag ON AgLibraryKeywordFace(tag, face);",
-            #    "CREATE INDEX IF NOT EXISTS idx_keywordface_face ON AgLibraryKeywordFace(face, tag);",
-            #    "CREATE INDEX IF NOT EXISTS idx_face_image ON AgLibraryFace(image, id_local);",
-            #    "CREATE INDEX IF NOT EXISTS idx_images_rootfile ON Adobe_images(rootFile, id_local);",
-            #    "CREATE INDEX IF NOT EXISTS idx_file_folder ON AgLibraryFile(folder, id_local);",
-            #    "CREATE INDEX IF NOT EXISTS idx_folder_root ON AgLibraryFolder(rootFolder, id_local);"
-            #]
-            
-            #for idx_sql in indexes:
-            #    cursor.execute(idx_sql)
+            # Get total count for progress tracking
+            cursor.execute("""
+                SELECT COUNT(*)
+                FROM AgLibraryKeyword LK
+                INNER JOIN AgLibraryKeywordFace LKF ON LK.id_local = LKF.tag
+                INNER JOIN AgLibraryFace LF ON LKF.face = LF.id_local 
+                WHERE LK.name IS NOT NULL
+                    AND LF.tl_x IS NOT NULL 
+                    AND LF.tl_y IS NOT NULL
+                    AND LF.br_x IS NOT NULL 
+                    AND LF.br_y IS NOT NULL
+            """)
+            total_faces = cursor.fetchone()[0]
+            if logging.getLogger().isEnabledFor(logging.INFO):
+                logging.info(f"Total face regions to process:\t{total_faces}")
             
             # Optimized main query with better join order and reduced calculations
             cursor.execute("""
@@ -208,10 +250,14 @@ def fetch_face_data_batch(catalog_path: str, batch_size: int = 1000) -> List[Tup
             """)
             
             # Process results in batches to manage memory
+            batch_count = 0
             while True:
                 batch = cursor.fetchmany(batch_size)
                 if not batch:
                     break
+                
+                batch_count += 1
+                batch_processed = 0
                 
                 for row in batch:
                     (rootPath, fileName, folderPath, ext, name, keyword_id, 
@@ -221,18 +267,28 @@ def fetch_face_data_batch(catalog_path: str, batch_size: int = 1000) -> List[Tup
                     full_path = os.path.normpath(os.path.join(rootPath, folderPath, fileName))
                     
                     results.append((full_path, ext, name, keyword_id, left, top, right, bottom, cw, ch, cx, cy))
+                    batch_processed += 1
+                    total_processed += 1
                     
                     if logging.getLogger().isEnabledFor(logging.DEBUG):
                         logging.debug(f"DB Face:\t{full_path}\t{ext}\t{name}\t{keyword_id}\t{left}\t{top}\t{right}\t{bottom}\t{cw}\t{ch}\t{cx}\t{cy}")
+                
+                if logging.getLogger().isEnabledFor(logging.INFO):
+                    logging.info(f"Batch {batch_count}:\tprocessed {batch_processed}\tface regions (total: {total_processed})")
+                
+                # Optional: Force garbage collection for large batches
+                if batch_count % 10 == 0:
+                    import gc
+                    gc.collect()
             
             if logging.getLogger().isEnabledFor(logging.INFO):
-                logging.info(f"fetch_face_data_batch\tTotal SQLite rows fetched: {len(results)}")
+                logging.info(f"Completed:\t{total_processed} face regions loaded")
             
     except sqlite3.Error as e:
-        logging.error(f"fetch_face_data_batch\tDatabase error: {e}")
+        logging.error(f"fetch_face_data_batch\tDatabase error:\t{e}")
         return []
     except Exception as e:
-        logging.error(f"fetch_face_data_batch\tUnexpected error: {e}")
+        logging.error(f"fetch_face_data_batch\tUnexpected error:\t{e}")
         return []
     
     return results
@@ -247,14 +303,14 @@ def is_duplicate(existing, name, cw, ch, cx, cy):
             return 'area'
     return None
 
+# Optimized metadata extraction with better error handling and caching.
 def extract_existing_metadata(file_path, exiftool_path) -> Tuple[List[Tuple[str, float, float, float, float]], List[str], List[str], List[str]]:
-    """
-    Optimized metadata extraction with better error handling and caching.
-    """
+
+    # Function to read all metadata from a file using ExifTool with optimized command
     def read_all_metadata(target_path):
         # Optimized ExifTool command with specific field selection
         cmd = [
-            exiftool_path, '-j', '-struct', '-fast2',  # Fast mode for better performance
+            exiftool_path, '-j', '-struct', '-fast',  # Fast mode for better performance - fast2 could miss some metadata
             '-Keywords', '-Subject', '-HierarchicalSubject',
             '-RegionName', '-RegionType', '-RegionAreaX', '-RegionAreaY', 
             '-RegionAreaW', '-RegionAreaH', '-RegionInfo',
@@ -262,7 +318,7 @@ def extract_existing_metadata(file_path, exiftool_path) -> Tuple[List[Tuple[str,
         ]
         
         if logging.getLogger().isEnabledFor(logging.DEBUG):
-            logging.debug(f"Read all metadata:\t{' '.join(cmd)}")
+            logging.debug(f"Read all metadata\t{' '.join(cmd)}")
         
         try:
             result = subprocess.run(
@@ -275,15 +331,18 @@ def extract_existing_metadata(file_path, exiftool_path) -> Tuple[List[Tuple[str,
             )
             
             if result.returncode != 0:
-                if logging.getLogger().isEnabledFor(logging.DEBUG):
-                    logging.debug(f"extract_existing_metadata\tExifTool warning on {target_path}: {result.stderr.strip()}")
+                logging.warning(f"read_all_metadata\tExifTool warning on\t{target_path}:\t{result.stderr.strip()}")
                 return [], [], [], []
 
+            # Check if output is empty or malformed
             if not result.stdout.strip():
+                logging.warning(f"read_all_metadata\tExifTool empty or malformed output on\t{target_path}:\t{result.stderr.strip()}")
                 return [], [], [], []
                 
             data_list = json.loads(result.stdout)
+            # Check if data_list is not loaded or is empty
             if not data_list:
+                logging.warning(f"read_all_metadata\tExifTool JSON load failed on\t{target_path}:\t{result.stderr.strip()}")
                 return [], [], [], []
 
             data = data_list[0]
@@ -299,17 +358,17 @@ def extract_existing_metadata(file_path, exiftool_path) -> Tuple[List[Tuple[str,
             return existing_faces, keywords, subject, hierarchical
             
         except subprocess.TimeoutExpired:
-            logging.warning(f"extract_existing_metadata\tExifTool timeout on {target_path}")
+            logging.warning(f"read_all_metadata\tExifTool timeout on {target_path}")
             return [], [], [], []
         except json.JSONDecodeError as e:
-            logging.error(f"extract_existing_metadata\tJSON decode error for {target_path}: {e}")
+            logging.error(f"read_all_metadata\tJSON decode error for\t{target_path}:\t{e}")
             return [], [], [], []
         except Exception as e:
-            logging.error(f"extract_existing_metadata\tUnexpected error reading {target_path}: {str(e)}")
+            logging.error(f"read_all_metadata\tUnexpected error reading\t{target_path}:\t{str(e)}")
             return [], [], [], []
 
+    # Function to normalize values to a list for consistent processing
     def normalize_to_list(value):
-        """Convert value to list format consistently"""
         if value is None:
             return []
         elif isinstance(value, list):
@@ -329,19 +388,19 @@ def extract_existing_metadata(file_path, exiftool_path) -> Tuple[List[Tuple[str,
     if file_ext in RAW_FORMATS:
         sidecar = os.path.splitext(file_path)[0] + ".xmp"
         if os.path.isfile(sidecar):
-            logging.info(f"Reading XMP sidecar for {file_path}")
+            if logging.getLogger().isEnabledFor(logging.INFO):
+                logging.info(f"Reading XMP sidecar for\t{file_path}")
             return read_all_metadata(sidecar)
 
     return [], [], [], []
 
+# Function to extract face regions from metadata with optimized parsing
 def extract_faces_from_data(data) -> List[Tuple[str, float, float, float, float]]:
-    """
-    Optimized face region extraction with better error handling.
-    """
+
     existing_faces = []
 
+    # Safely convert value to float with error handling
     def safe_float_convert(value):
-        """Safely convert value to float with error handling"""
         try:
             return float(value)
         except (ValueError, TypeError):
@@ -409,12 +468,13 @@ def extract_faces_from_data(data) -> List[Tuple[str, float, float, float, float]
     
     return existing_faces
 
+# Function to write metadata in batch with optimized argument handling and error management.
 def write_metadata_batch(image_path, face_regions: List[Tuple], keywords_to_add: Dict[str, List[str]], 
                         dry_run: bool, exiftool_path: str, use_sidecar: bool):
-    """
-    Optimized batch metadata writing with better error handling and performance.
-    """
+
     if not face_regions and not any(keywords_to_add.values()):
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            logging.debug(f"write_metadata_batch\tskipping write for\t{image_path}\t no face regions or keywords to add")
         return
     
     args = [exiftool_path, '-overwrite_original', '-fast']  # Added fast mode
@@ -453,7 +513,7 @@ def write_metadata_batch(image_path, face_regions: List[Tuple], keywords_to_add:
     args.append(target)
     
     if logging.getLogger().isEnabledFor(logging.DEBUG):
-        logging.debug(f"Batch write:\t{' '.join(args)}")
+        logging.debug(f"write_metadata_batch\tBatch write:\t{' '.join(args)}")
     
     if not dry_run:
         try:
@@ -467,28 +527,27 @@ def write_metadata_batch(image_path, face_regions: List[Tuple], keywords_to_add:
             )
             
             if result.returncode != 0:
-                logging.error(f"write_metadata_batch\tExifTool error writing to {target}: {result.stderr.strip()}")
+                logging.error(f"write_metadata_batch\tExifTool error writing to {target}:\t{result.stderr.strip()}")
                 return False
             else:
-                if logging.getLogger().isEnabledFor(logging.DEBUG):
-                    logging.debug(f"write_metadata_batch\tSuccessfully wrote metadata to {target}")
+                if logging.getLogger().isEnabledFor(logging.INFO):
+                    logging.info(f"Wrote metadata to\t{target}")
                 return True
                 
         except subprocess.TimeoutExpired:
-            logging.error(f"write_metadata_batch\tTimeout writing to {image_path}")
+            logging.error(f"write_metadata_batch\tTimeout writing to\t{image_path}")
             return False
         except Exception as e:
-            logging.error(f"write_metadata_batch\tError writing to {image_path}: {str(e)}")
+            logging.error(f"write_metadata_batch\tError writing to\t{image_path}:\t{str(e)}")
             return False
     
     return True  # Dry run success
 
+# Function to process a single file with face regions and keywords, optimizing memory usage and performance.
 def process_file_keywords(full_path, face_list, args, keyword_hierarchy):
-    """
-    Optimized file processing with better memory management and error handling.
-    """
+
     if not os.path.isfile(full_path):
-        logging.error(f"File not found:\t{full_path}")
+        logging.error(f"process_file_keywords\tFile not found:\t{full_path}")
         return
     
     # Get file format and determine processing strategy
@@ -516,17 +575,19 @@ def process_file_keywords(full_path, face_list, args, keyword_hierarchy):
     
     # Process faces efficiently
     for fmt, name, keyword_id, left, top, right, bottom, cw, ch, cx, cy in face_list:
-        logging.info(f"Processing\t{name}")
+        if logging.getLogger().isEnabledFor(logging.WARNING):   
+            logging.warning(f"Processing\t{name}")
         
         # Check for duplicate faces
         dup_type = is_duplicate(existing_faces, name, cw, ch, cx, cy)
         if dup_type:
-            logging.info(f"Duplicate\t({dup_type}):\t{name}")
+            if logging.getLogger().isEnabledFor(logging.INFO):
+                logging.info(f"Duplicate\t({dup_type}):\t{name}")
             continue
         
         # Add face region to batch
         new_face_regions.append((name, cx, cy, cw, ch))
-        logging.info(f"Queued face\t'{name}'\tfor batch write")
+        logging.info(f"Queued Face\t'{name}'")
         
         # Handle hierarchical keywords efficiently
         if args.write_hierarchical_tags and keyword_id in keyword_hierarchy:
@@ -537,17 +598,17 @@ def process_file_keywords(full_path, face_list, args, keyword_hierarchy):
             if simple_keyword not in existing_keywords_set:
                 keywords_to_add['keywords'].append(simple_keyword)
                 existing_keywords_set.add(simple_keyword)  # Prevent duplicates within batch
-                logging.info(f"Queued Keywords field\t'{simple_keyword}'\tfor batch write")
+                logging.info(f"Queued Keywords field\t'{simple_keyword}'")
             
             if simple_keyword not in existing_subject_set:
                 keywords_to_add['subject'].append(simple_keyword)
                 existing_subject_set.add(simple_keyword)
-                logging.info(f"Queued Subject field\t'{simple_keyword}'\tfor batch write")
+                logging.info(f"Queued Subject field\t'{simple_keyword}'")
                 
             if hierarchical_keyword not in existing_hierarchical_set:
                 keywords_to_add['hierarchical'].append(hierarchical_keyword)
                 existing_hierarchical_set.add(hierarchical_keyword)
-                logging.info(f"Queued HierarchicalSubject field\t'{hierarchical_keyword}'\tfor batch write")
+                logging.info(f"Queued HierarchicalSubject field\t'{hierarchical_keyword}'")
     
     # Perform batch write if there's anything to write
     total_keywords = sum(len(v) for v in keywords_to_add.values())
@@ -564,13 +625,14 @@ def process_file_keywords(full_path, face_list, args, keyword_hierarchy):
         if success:
             action = "Wrote" if args.write else "Simulated write"
             face_count = len(new_face_regions)
-            logging.info(f"{action} ({log_type}) batch: {face_count} faces, {total_keywords} total keywords to {full_path}")
+            if logging.getLogger().isEnabledFor(logging.WARNING):
+                logging.warning(f"{action} ({log_type}) batch:\t{face_count} faces,\t{total_keywords} total keywords to\t{full_path}")
             
             # Log breakdown by field for debugging
             if logging.getLogger().isEnabledFor(logging.DEBUG):
                 for field, values in keywords_to_add.items():
                     if values:
-                        logging.debug(f"  {field}: {len(values)} keywords")
+                        logging.debug(f"\t{field}:\t{len(values)} keywords")
 
 def main():
     global db_pool
@@ -578,7 +640,8 @@ def main():
     args = parse_args()
     session_id = uuid.uuid4().hex[:8]
     init_logging(args.log, session_id, args.log_level)
-    logging.info(f'Session {session_id} started')
+    if logging.getLogger().isEnabledFor(logging.WARNING):
+        logging.warning(f'Session\t{session_id}\tstarted')
     
     # Initialize database pool
     db_pool = DatabasePool(args.catalog)
@@ -586,43 +649,50 @@ def main():
     def run_sync():
         try:
             # Load keyword hierarchy if hierarchical tags are requested
-            logging.info(f'Loading keyword hierarchy from {args.catalog}')
+            if logging.getLogger().isEnabledFor(logging.WARNING):
+                logging.warning(f'Loading keyword hierarchy from\t{args.catalog}')
             keyword_hierarchy = {}
             if args.write_hierarchical_tags:
-                keyword_hierarchy = fetch_keyword_hierarchy(args.catalog)
-                logging.info(f'Loaded {len(keyword_hierarchy)} keyword hierarchies')
+                keyword_hierarchy = fetch_keyword_hierarchy(args.catalog, args.batch_size)
+                if logging.getLogger().isEnabledFor(logging.WARNING):
+                    logging.warning(f'Loaded\t{len(keyword_hierarchy)} keyword hierarchies')
             
             # Fetch face data from the catalog with batch processing
-            logging.info(f'Fetching face data from {args.catalog}')
+            if logging.getLogger().isEnabledFor(logging.WARNING):
+                logging.warning(f'Fetching face data from\t{args.catalog}')
             face_data = fetch_face_data_batch(args.catalog, args.batch_size)
-            logging.info(f'{len(face_data)} face regions found in {args.catalog}')
+            if logging.getLogger().isEnabledFor(logging.WARNING):
+                logging.warning(f'face regions:\t{len(face_data)}\tfound in\t{args.catalog}')
             
             if not face_data:
-                logging.warning("No face data found in catalog")
+                logging.error("No face data found in catalog")
                 return
             
-            # Group face data by file path for batch processing
-            file_data = defaultdict(list)
-            for row in face_data:
-                full_path, fmt, name, keyword_id, left, top, right, bottom, cw, ch, cx, cy = row
-                file_data[full_path].append((fmt, name, keyword_id, left, top, right, bottom, cw, ch, cx, cy))
-            
-            logging.info(f'Processing {len(file_data)} unique image files')
-            
-            # Process each file with progress tracking
-            for full_path, face_list in tqdm(file_data.items(), desc="Processing images", unit="files"):
-                logging.info(f"======")
-                logging.info(f"File:\t{full_path}")
-                process_file_keywords(full_path, face_list, args, keyword_hierarchy)
-                
         finally:
             # Clean up database connections
             if db_pool:
                 db_pool.close_all()
 
+        # Group face data by file path for batch processing
+        file_data = defaultdict(list)
+        for row in face_data:
+            full_path, fmt, name, keyword_id, left, top, right, bottom, cw, ch, cx, cy = row
+            file_data[full_path].append((fmt, name, keyword_id, left, top, right, bottom, cw, ch, cx, cy))
+        
+        if logging.getLogger().isEnabledFor(logging.WARNING):
+            logging.warning(f'Processing\t{len(file_data)} unique image files')
+        
+        # Process each file with progress tracking
+        for full_path, face_list in tqdm(file_data.items(), desc="Processing images", unit="files"):
+            if logging.getLogger().isEnabledFor(logging.WARNING):
+                logging.warning(f"======")
+                logging.warning(f"File:\t{full_path}")
+            process_file_keywords(full_path, face_list, args, keyword_hierarchy)
+                
     # Run the main processing function with optional profiling
     if args.profile:
-        logging.info("Profiling enabled")
+        if logging.getLogger().isEnabledFor(logging.WARNING):
+            logging.warning("Profiling enabled")
         profiler = cProfile.Profile()
         profiler.enable()
         
@@ -644,7 +714,7 @@ def main():
     else:
         run_sync()
 
-    logging.info(f"Session {session_id} complete")
+    logging.warning(f"Session {session_id} complete")
 
 if __name__ == '__main__':
     main()
