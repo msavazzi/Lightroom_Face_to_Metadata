@@ -29,6 +29,8 @@ Options are:
     --batch-size                        Database query batch size (default: 1000)'
 
 Usage Examples:
+
+
 **Basic usage (dry run):**
 
 
@@ -48,6 +50,10 @@ Usage Examples:
 
 
     python optimized_script.py --catalog /path/to/catalog.lrcat --profile performance.prof
+
+  
+  
+  
 
 
 *This script is intended for educational purposes only. Use at your own risk.*
