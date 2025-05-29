@@ -26,6 +26,7 @@ Options are:
     --log-level		            Set the logging level - default is 'INFO', choices are 'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'
     --write-hierarchical-tags       Write hierarchical keyword tags to metadata
     --profile                   Enable profiling and save output to specified file (default: profile.prof)
+    --batch-size                Database query batch size (default: 1000)'
 
   
 *This script is intended for educational purposes only. Use at your    own risk.
