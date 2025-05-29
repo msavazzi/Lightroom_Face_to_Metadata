@@ -22,9 +22,10 @@ Options are:
     --catalog		            Path to Lightroom .lrcat file
     --log			            Path to save the log file - default log.txt in the same folder of the script
     --write			            Enable actual writing (default is dry-run)
-    --exiftool-path             Path to the exiftool executable - default is exiftool in the same folder of the script
+    --exiftool-path                 Path to the exiftool executable - default is exiftool in the same folder of the script
     --log-level		            Set the logging level - default is 'INFO', choices are 'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'
-    --write-hierarchical-tags   Write hierarchical keyword tags to metadata
+    --write-hierarchical-tags       Write hierarchical keyword tags to metadata
+    --profile                   Enable profiling and save output to specified file (default: profile.prof)
 
   
 *This script is intended for educational purposes only. Use at your    own risk.

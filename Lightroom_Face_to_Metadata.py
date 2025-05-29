@@ -31,6 +31,8 @@ import argparse
 import logging
 import subprocess
 import cProfile
+import pstats
+import io
 from tqdm import tqdm
 from datetime import datetime
 from typing import List, Tuple, Dict
@@ -47,6 +49,7 @@ def parse_args():
     parser.add_argument('--exiftool-path', default='exiftool', help='Path to the exiftool executable')
     parser.add_argument('--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], help='Set the logging level')
     parser.add_argument('--write-hierarchical-tags', action='store_true', help='Write hierarchical keyword tags to metadata')
+    parser.add_argument('--profile', nargs='?', const='profile.prof', default=None, help='Enable profiling and save output to specified file (default: profile.prof)')
     return parser.parse_args()
 
 # Initialize logging
@@ -411,92 +414,109 @@ def main():
     init_logging(args.log, session_id, args.log_level)
     logging.warning(f'Session {session_id} started')
     
-    # Load keyword hierarchy if hierarchical tags are requested
-    logging.warning(f'Loading keyword hierarchy from {args.catalog}')
-    keyword_hierarchy = {}
-    if args.write_hierarchical_tags:
-        keyword_hierarchy = fetch_keyword_hierarchy(args.catalog)
-        logging.warning(f'Loaded {len(keyword_hierarchy)} keyword hierarchies')
-    
-    # Fetch face data from the catalog
-    logging.warning(f'Fetching face data from {args.catalog}')
-    face_data = fetch_face_data(args.catalog)
-    logging.warning(f'{len(face_data)} face regions found in {args.catalog}')
-    old_full_path = ""
-    existing_faces = []
-    existing_keywords = []
+    def run_sync():
+        # Load keyword hierarchy if hierarchical tags are requested
+        logging.warning(f'Loading keyword hierarchy from {args.catalog}')
+        keyword_hierarchy = {}
+        if args.write_hierarchical_tags:
+            keyword_hierarchy = fetch_keyword_hierarchy(args.catalog)
+            logging.warning(f'Loaded {len(keyword_hierarchy)} keyword hierarchies')
+        
+        # Fetch face data from the catalog
+        logging.warning(f'Fetching face data from {args.catalog}')
+        face_data = fetch_face_data(args.catalog)
+        logging.warning(f'{len(face_data)} face regions found in {args.catalog}')
+        old_full_path = ""
+        existing_faces = []
+        existing_keywords = []
 
-    # Process each face region and metadata
-    for row in tqdm(face_data, desc="Processing images"):
-        full_path, fmt, name, keyword_id, left, top, right, bottom, cw, ch, cx, cy = row
-        if full_path != old_full_path:
-            logging.warning(f"======")
-            logging.warning(f"File:\t{full_path}\tFormat:\t{fmt}")
-        else:
-            logging.warning(f"------")
-        if not os.path.isfile(full_path):
-            logging.error(f"File not found:\t{full_path}")
-            continue
-        else:
-            logging.warning(f"Processing\t{name}")
+        # Process each face region and metadata
+        for row in tqdm(face_data, desc="Processing images"):
+            full_path, fmt, name, keyword_id, left, top, right, bottom, cw, ch, cx, cy = row
+            if full_path != old_full_path:
+                logging.warning(f"======")
+                logging.warning(f"File:\t{full_path}\tFormat:\t{fmt}")
+            else:
+                logging.warning(f"------")
+            if not os.path.isfile(full_path):
+                logging.error(f"File not found:\t{full_path}")
+                continue
+            else:
+                logging.warning(f"Processing\t{name}")
 
-        # Only re-read existing data when we encounter a new file
-        if full_path != old_full_path:
-            old_full_path = full_path
-            existing_faces = []
-            existing_faces = extract_existing_faces(full_path, args.exiftool_path)
-            existing_keywords = []
-            if args.write_hierarchical_tags:
-                existing_keywords = extract_existing_keywords(full_path, args.exiftool_path)
+            # Only re-read existing data when we encounter a new file
+            if full_path != old_full_path:
+                old_full_path = full_path
+                existing_faces = []
+                existing_faces = extract_existing_faces(full_path, args.exiftool_path)
+                existing_keywords = []
+                if args.write_hierarchical_tags:
+                    existing_keywords = extract_existing_keywords(full_path, args.exiftool_path)
 
-        # Check for duplicate faces
-        dup_type = is_duplicate(existing_faces, name, cw, ch, cx, cy)
-        if dup_type:
-            logging.warning(f"Duplicate\t({dup_type}):\t{name}")
-        else:
-            # Write face region data
-            use_sidecar = fmt.lower() in RAW_FORMATS
-            log_type = "sidecar" if use_sidecar else "embedded"
-
-            write_xmp_region(full_path, name, cx, cy, cw, ch,
-                             dry_run=not args.write,
-                             exiftool_path=args.exiftool_path,
-                             use_sidecar=use_sidecar)
-
-            action = "Wrote" if args.write else "Simulated write"
-            logging.warning(f"{action} ({log_type}) face\t'{name}'\tto\t{full_path} ")
-
-        # Write hierarchical keyword tag if requested and not already present
-        if args.write_hierarchical_tags and keyword_id in keyword_hierarchy:
-            hierarchical_keyword = keyword_hierarchy[keyword_id]
-            
-            # Check if this hierarchical keyword already exists
-            if hierarchical_keyword not in existing_keywords:
+            # Check for duplicate faces
+            dup_type = is_duplicate(existing_faces, name, cw, ch, cx, cy)
+            if dup_type:
+                logging.warning(f"Duplicate\t({dup_type}):\t{name}")
+            else:
+                # Write face region data
                 use_sidecar = fmt.lower() in RAW_FORMATS
                 log_type = "sidecar" if use_sidecar else "embedded"
-                
-                write_hierarchical_keyword(full_path, hierarchical_keyword, 
-                                         name,
-                                         dry_run=not args.write,
-                                         exiftool_path=args.exiftool_path,
-                                         use_sidecar=use_sidecar)
-                
+
+                write_xmp_region(full_path, name, cx, cy, cw, ch,
+                                dry_run=not args.write,
+                                exiftool_path=args.exiftool_path,
+                                use_sidecar=use_sidecar)
+
                 action = "Wrote" if args.write else "Simulated write"
-                logging.warning(f"{action} ({log_type}) keyword\t'{name}'\t hierarchical keyword:\t'{hierarchical_keyword}'\tto\t{full_path}")
+                logging.warning(f"{action} ({log_type}) face\t'{name}'\tto\t{full_path} ")
+
+            # Write hierarchical keyword tag if requested and not already present
+            if args.write_hierarchical_tags and keyword_id in keyword_hierarchy:
+                hierarchical_keyword = keyword_hierarchy[keyword_id]
                 
-                # Add to existing keywords to avoid re-writing in same session
-                existing_keywords.append(hierarchical_keyword)
-            else:
-                logging.warning(f"Existing:\t{hierarchical_keyword}")
+                # Check if this hierarchical keyword already exists
+                if hierarchical_keyword not in existing_keywords:
+                    use_sidecar = fmt.lower() in RAW_FORMATS
+                    log_type = "sidecar" if use_sidecar else "embedded"
+                    
+                    write_hierarchical_keyword(full_path, hierarchical_keyword, 
+                                            name,
+                                            dry_run=not args.write,
+                                            exiftool_path=args.exiftool_path,
+                                            use_sidecar=use_sidecar)
+                    
+                    action = "Wrote" if args.write else "Simulated write"
+                    logging.warning(f"{action} ({log_type}) keyword\t'{name}'\t hierarchical keyword:\t'{hierarchical_keyword}'\tto\t{full_path}")
+                    
+                    # Add to existing keywords to avoid re-writing in same session
+                    existing_keywords.append(hierarchical_keyword)
+                else:
+                    logging.warning(f"Existing:\t{hierarchical_keyword}")
+
+    # Run the main processing function
+    if args.profile:
+        # Enable profiling if requested
+        logging.warning("Profiling enabled")
+        profiler = cProfile.Profile()
+        profiler.enable()
+        run_sync()
+        profiler.disable()
+        # Save profiling results to a file
+        profile_file = args.profile if isinstance(args.profile, str) else 'profile.prof'
+        profiler.dump_stats(profile_file)
+        print(f"Profiling data saved to {profile_file}")        
+        # Print profiling results to console
+        s = io.StringIO()
+        ps = pstats.Stats(profiler, stream=s).sort_stats('cumulative')
+        ps.print_stats()
+        print("Profiling results:\n", s.getvalue())
+    else:
+        # Run without profiling
+        run_sync()
 
     logging.warning(f"Session {session_id} complete")
 
 if __name__ == '__main__':
-    profiler = cProfile.Profile()
-    profiler.enable()
     main()
-    profiler.disable()
-    profiler.print_stats(sort='cumulative')
-# Save profiling results to a file
-    profiler.dump_stats('Lightroom_Face_to_Metadata.prof')
-    logging.warning(f"Profiling data saved to Lightroom_Face_to_Metadata.prof")
+# This script is intended to be run as a standalone program
+# and will not execute if imported as a module.
