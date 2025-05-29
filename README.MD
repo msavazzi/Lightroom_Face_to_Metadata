@@ -13,16 +13,18 @@ Based on the database schema from: ***Lightroom Classic 14.3*** analyzed as *SQL
 The usage of python and ExifTool is needed as Lightroom does not write face data to metadata nor it provides a way to export it via Plugin API.
 The script queries the database for all the files with Faces and extracts all the regions as defined in Lightroom, this is done in memory. 
 For every file it extracts the XMP metadata, if possible in MWG format, for the embedded metadata or the XMP sidecart .xmp file and compares the Face from database with the ones in metadata. The check to avoid duplicates is done on the name and on the region. If the Face is not present in the file it is added to the XMP metadata. The script manages flat metadata (as in .heic files) and hierarchical regions (as in .jpg files).
+It adds the Face Tags to the picture Keywords and Subject and the full metadata hierarchy, separated by |, in the HierarchicalSubject of the picture if they are not present.
 
   
 
 Options are:
 
-    --catalog		Path to Lightroom .lrcat file
-    --log			Path to save the log file - default log.txt in the same folder of the script
-    --write			Enable actual writing (default is dry-run)
-    --exiftool-path          Path to the exiftool executable - default is exiftool in the same folder of the script
-    --log-level		Set the logging level - default is 'INFO', choices are 'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'
+    --catalog		            Path to Lightroom .lrcat file
+    --log			            Path to save the log file - default log.txt in the same folder of the script
+    --write			            Enable actual writing (default is dry-run)
+    --exiftool-path             Path to the exiftool executable - default is exiftool in the same folder of the script
+    --log-level		            Set the logging level - default is 'INFO', choices are 'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'
+    --write-hierarchical-tags   Write hierarchical keyword tags to metadata
 
   
 *This script is intended for educational purposes only. Use at your    own risk.

@@ -30,6 +30,7 @@ import uuid
 import argparse
 import logging
 import subprocess
+import cProfile
 from tqdm import tqdm
 from datetime import datetime
 from typing import List, Tuple, Dict
@@ -491,4 +492,11 @@ def main():
     logging.warning(f"Session {session_id} complete")
 
 if __name__ == '__main__':
+    profiler = cProfile.Profile()
+    profiler.enable()
     main()
+    profiler.disable()
+    profiler.print_stats(sort='cumulative')
+# Save profiling results to a file
+    profiler.dump_stats('Lightroom_Face_to_Metadata.prof')
+    logging.warning(f"Profiling data saved to Lightroom_Face_to_Metadata.prof")
