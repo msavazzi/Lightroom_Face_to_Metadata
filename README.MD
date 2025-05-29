@@ -30,15 +30,23 @@ Options are:
 
 Usage Examples:
 **Basic usage (dry run):**
+
+
     python optimized_script.py --catalog /path/to/catalog.lrcat
 
 **Write mode with hierarchical keywords:**
+
+
     python optimized_script.py --catalog /path/to/catalog.lrcat --write --write-hierarchical-tags
 
 **Performance tuning for large catalogs:**
+
+
     python optimized_script.py --catalog /path/to/catalog.lrcat --batch-size 2000 --write
 
 **With profiling:**
+
+
     python optimized_script.py --catalog /path/to/catalog.lrcat --profile performance.prof
 
 
