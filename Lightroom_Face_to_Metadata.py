@@ -37,6 +37,7 @@ import pstats
 import io
 import threading
 import concurrent.futures
+import time
 from threading import Lock
 from tqdm import tqdm
 from datetime import datetime
@@ -134,7 +135,7 @@ def init_logging(log_path: str, session_id: str, log_level: str):
         fmt='%(asctime)s\t[Session {session_id}]\t[%(threadName)s]\t%(taskname)s\t%(levelname)s\t%(message)s'.format(session_id=session_id),
         datefmt='%Y-%m-%d %H:%M:%S'
     )
-    handler = logging.FileHandler(log_path)
+    handler = logging.FileHandler(log_path, encoding='utf-8')
     handler.setFormatter(formatter)
     handler.addFilter(TaskNameFilter())
     logger = logging.getLogger()
@@ -560,17 +561,25 @@ def main():
     # Define functions to load keywords and face data in parallel
     def load_keywords():
         nonlocal keyword_hierarchy
+        start = time.time()
         if args.write_hierarchical_tags:
             keyword_hierarchy = fetch_keyword_hierarchy(args.catalog, args.batch_size)
             if thread_logger.isEnabledFor(logging.WARNING):
                 thread_logger.warning(f'Loaded\t{len(keyword_hierarchy)} keyword hierarchies')
+        elapsed = time.time() - start
+        if thread_logger.isEnabledFor(logging.WARNING):
+            thread_logger.warning(f"Keyword hierarchy loading took\t{elapsed:.2f} seconds")
 
     # Define function to load face data in parallel
     def load_faces():
         nonlocal face_data
+        start = time.time()
         face_data = fetch_face_data_batch(args.catalog, args.batch_size)
         if thread_logger.isEnabledFor(logging.WARNING):
             thread_logger.warning(f'face regions:\t{len(face_data)}\tfound in\t{args.catalog}')
+        elapsed = time.time() - start
+        if thread_logger.isEnabledFor(logging.WARNING):
+            thread_logger.warning(f"Face Data loading took\t{elapsed:.2f} seconds")
     
     # Start threads to load keywords and face data
     t1 = threading.Thread(target=load_keywords, name="DB-Keyword-Thread")

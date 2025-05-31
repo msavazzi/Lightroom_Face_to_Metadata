@@ -23,6 +23,23 @@
                 "4"
             ],
             "console": "integratedTerminal"
-        }
+        },
+          {
+            "name": "Debug Lightroom_Face_to_Metadata.py Massive Catalog - No write",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/Lightroom_Face_to_Metadata.py",
+            "args": [
+                "--catalog",
+                "E:\\Users\\massi\\OneDrive\\Pictures\\Lightroom\\Catalog 2025 05 13\\Catalog 2025 05 13.lrcat",
+                "--exiftool",
+                "E:\\exiftool.exe",
+                "--log-level",
+                "WARNING",
+                "--write-hierarchical-tags"
+            ],
+            "console": "integratedTerminal"
+        },
+      
     ]
 }
