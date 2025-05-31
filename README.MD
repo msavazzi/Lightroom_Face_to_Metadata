@@ -11,9 +11,9 @@ Based on the database schema from: ***Lightroom Classic 14.3*** analyzed as *SQL
   
 
 The usage of python and ExifTool is needed as Lightroom does not write face data to metadata nor it provides a way to export it via Plugin API.
-The script queries the database for all the files with Faces and extracts all the regions as defined in Lightroom, this is done in memory. 
-For every file it extracts the XMP metadata, if possible in MWG format, for the embedded metadata or the XMP sidecart .xmp file and compares the Face from database with the ones in metadata. The check to avoid duplicates is done on the name and on the region. If the Face is not present in the file it is added to the XMP metadata. The script manages flat metadata (as in .heic files) and hierarchical regions (as in .jpg files).
-It adds the Face Tags to the picture Keywords and Subject and the full metadata hierarchy, separated by |, in the HierarchicalSubject of the picture if they are not present.
+The script queries the database for all the files with Faces and extracts all the regions as defined in Lightroom, this is done in memory> it also queries all the metadata related to faces amd its hierarchy.
+For every file it extracts the XMP metadata, if possible in MWG format, for the embedded metadata or the XMP sidecart .xmp file and compares the Face from database with the ones in metadata. The check to avoid duplicates is done on the name and on the region. If the Face is not present in the file it is added to the XMP metadata. It also reads all the metadata (Subject, Keywords, HierarchicalSubject) and checks if there are no duplicates it will add the Face keywords accordingly, Keywords and Subject and the full metadata hierarchy, separated by |, in the HierarchicalSubject of the picture if they are not present.
+The script manages flat metadata (as in .heic files) and hierarchical regions (as in .jpg files).
 
   
 
@@ -27,6 +27,8 @@ Options are:
     --write-hierarchical-tags           Write hierarchical keyword tags to metadata
     --profile                           Enable profiling and save output to specified file (default: profile.prof)
     --batch-size                        Database query batch size (default: 1000)'
+    --threads                           Number of threads for file operations (0 = auto-detect optimal)
+    --max-threads                       Maximum number of threads to use when auto-detecting (default: 16)
 
 Usage Examples:
 

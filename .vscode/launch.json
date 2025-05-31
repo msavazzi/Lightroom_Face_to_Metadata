@@ -14,7 +14,13 @@
                 "--log-level",
                 "DEBUG",
                 "--write-hierarchical-tags",
-                "--write"
+                "--write",
+                "--batch-size",
+                "10",
+                "--threads",
+                "2",
+                "--max-threads",
+                "4"
             ],
             "console": "integratedTerminal"
         }

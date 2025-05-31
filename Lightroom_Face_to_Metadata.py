@@ -1,6 +1,8 @@
-# Script to sync Lightroom face data to image metadata using ExifTool
+# Script to write Lightroom face data to image metadata using ExifTool and addying hierarchical keywords.
+# This script reads face regions from the Lightroom catalog and writes them to image metadata.
 # Based on the database schema from: Lightroom Classic 14.3
-# Needed as Lightroom does not write face data to metadata nor it provides a way to export it via Plugin API
+# Needed as Lightroom does not write face data to metadata nor it provides a way to export it via Plugin API.
+# Full multi-threaded implementation with error handling and logging.
 # Copyright (c) 2025, Massimo Savazzi
 # All rights reserved.
 # This script is licensed under the MIT License.
@@ -42,8 +44,10 @@ from typing import List, Tuple, Dict, Optional
 from collections import defaultdict
 from contextlib import contextmanager
 
+# Image formats that are considered RAW and may require sidecar files for metadata
 RAW_FORMATS = {'cr2', 'cr3', 'nef', 'arw', 'rw2', 'orf', 'raf', 'dng', 'pef', 'sr2'}
 
+# Database connection pool to manage SQLite connections
 class DatabasePool:
     def __init__(self, catalog_path: str ):
         self.catalog_path = catalog_path
@@ -67,21 +71,26 @@ class DatabasePool:
 
 db_pool = None
 
+# Custom logging filter to add task name to log records
+class TaskNameFilter(logging.Filter):
+    def filter(self, record):
+        # Only add brackets if taskname is not empty
+        taskname = getattr(record, 'taskname', '')
+        if taskname:
+            record.taskname = f'[{taskname}]\t'
+        else:
+            record.taskname = ''
+        return True
+
+# Thread-safe logger to ensure that log messages from multiple threads do not interleave
 class ThreadSafeLogger:
     def __init__(self):
         self._lock = Lock()
         self._logger = logging.getLogger()
     
     def _log_with_thread_id(self, level, msg, *args, **kwargs):
-        thread_id = threading.current_thread().name
-        level_name = logging.getLevelName(level)
-        if thread_id!= 'MainThread':
-            formatted_msg = f"[{thread_id}]\t{level_name}\t{msg}"
-        else:
-            formatted_msg = f"{level_name}\t{msg}"
-
         with self._lock:
-            self._logger.log(level, formatted_msg, *args, **kwargs)
+            self._logger.log(level, msg, *args, **kwargs)
     
     def debug(self, msg, *args, **kwargs):
         self._log_with_thread_id(logging.DEBUG, msg, *args, **kwargs)
@@ -103,6 +112,7 @@ class ThreadSafeLogger:
 
 thread_logger = None
 
+# Function to parse command line arguments
 def parse_args():
     parser = argparse.ArgumentParser(description="Sync Lightroom face data to image metadata.")
     parser.add_argument('--catalog', required=True, help='Path to Lightroom .lrcat file')
@@ -117,19 +127,24 @@ def parse_args():
     parser.add_argument('--max-threads', type=int, default=16, help='Maximum number of threads to use when auto-detecting (default: 16)')   
     return parser.parse_args()
 
+# Initialize logging with a thread-safe logger
 def init_logging(log_path: str, session_id: str, log_level: str):
     global thread_logger
     formatter = logging.Formatter(
-        fmt=f'%(asctime)s\t[Session {session_id}]\t%(message)s',
+        fmt='%(asctime)s\t[Session {session_id}]\t[%(threadName)s]\t%(taskname)s\t%(levelname)s\t%(message)s'.format(session_id=session_id),
         datefmt='%Y-%m-%d %H:%M:%S'
     )
     handler = logging.FileHandler(log_path)
     handler.setFormatter(formatter)
+    handler.addFilter(TaskNameFilter())
     logger = logging.getLogger()
     logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
+    logger.handlers.clear()
     logger.addHandler(handler)
+
     thread_logger = ThreadSafeLogger()
 
+# Function to fetch keyword hierarchy from the Lightroom catalog in batches
 def fetch_keyword_hierarchy(catalog_path: str, batch_size: int = 1000) -> Dict[int, str]:
     global db_pool
     hierarchy = {}
@@ -198,6 +213,7 @@ def fetch_keyword_hierarchy(catalog_path: str, batch_size: int = 1000) -> Dict[i
         return {}
     return hierarchy
 
+# Function to fetch face data from the Lightroom catalog in batches
 def fetch_face_data_batch(catalog_path: str, batch_size: int = 1000) -> List[Tuple]:
     global db_pool
     results = []
@@ -280,6 +296,7 @@ def fetch_face_data_batch(catalog_path: str, batch_size: int = 1000) -> List[Tup
         return []
     return results
 
+# Function to check if a face region is a duplicate based on name or coordinates
 def is_duplicate(existing, name, cw, ch, cx, cy):
     for e_name, ex, ey, ew, eh in existing:
         if name == e_name:
@@ -298,7 +315,7 @@ def extract_existing_metadata(file_path, exiftool_path) -> Tuple[List[Tuple[str,
             target_path
         ]
         if thread_logger.isEnabledFor(logging.DEBUG):
-            thread_logger.debug(f"Read all metadata\t{' '.join(cmd)}")
+            thread_logger.debug(f"Read all metadata\t{' '.join(cmd)}", extra={'taskname': os.path.basename(file_path)})
         try:
             result = subprocess.run(
                 cmd,
@@ -309,14 +326,14 @@ def extract_existing_metadata(file_path, exiftool_path) -> Tuple[List[Tuple[str,
                 check=False
             )
             if result.returncode != 0:
-                thread_logger.warning(f"read_all_metadata\tExifTool warning on\t{target_path}:\t{result.stderr.strip()}")
+                thread_logger.warning(f"read_all_metadata\tExifTool warning on\t{target_path}:\t{result.stderr.strip()}", extra={'taskname': os.path.basename(file_path)})
                 return [], [], [], []
             if not result.stdout.strip():
-                thread_logger.warning(f"read_all_metadata\tExifTool empty or malformed output on\t{target_path}:\t{result.stderr.strip()}")
+                thread_logger.warning(f"read_all_metadata\tExifTool empty or malformed output on\t{target_path}:\t{result.stderr.strip()}", extra={'taskname': os.path.basename(file_path)})
                 return [], [], [], []
             data_list = json.loads(result.stdout)
             if not data_list:
-                thread_logger.warning(f"read_all_metadata\tExifTool JSON load failed on\t{target_path}:\t{result.stderr.strip()}")
+                thread_logger.warning(f"read_all_metadata\tExifTool JSON load failed on\t{target_path}:\t{result.stderr.strip()}", extra={'taskname': os.path.basename(file_path)})
                 return [], [], [], []
             data = data_list[0]
             existing_faces = extract_faces_from_data(data)
@@ -325,13 +342,13 @@ def extract_existing_metadata(file_path, exiftool_path) -> Tuple[List[Tuple[str,
             hierarchical = normalize_to_list(data.get('HierarchicalSubject'))
             return existing_faces, keywords, subject, hierarchical
         except subprocess.TimeoutExpired:
-            thread_logger.warning(f"read_all_metadata\tExifTool timeout on {target_path}")
+            thread_logger.warning(f"read_all_metadata\tExifTool timeout on {target_path}", extra={'taskname': os.path.basename(file_path)})
             return [], [], [], []
         except json.JSONDecodeError as e:
-            thread_logger.error(f"read_all_metadata\tJSON decode error for\t{target_path}:\t{e}")
+            thread_logger.error(f"read_all_metadata\tJSON decode error for\t{target_path}:\t{e}", extra={'taskname': os.path.basename(file_path)})
             return [], [], [], []
         except Exception as e:
-            thread_logger.error(f"read_all_metadata\tUnexpected error reading\t{target_path}:\t{str(e)}")
+            thread_logger.error(f"read_all_metadata\tUnexpected error reading\t{target_path}:\t{str(e)}", extra={'taskname': os.path.basename(file_path)})
             return [], [], [], []
     def normalize_to_list(value):
         if value is None:
@@ -350,10 +367,11 @@ def extract_existing_metadata(file_path, exiftool_path) -> Tuple[List[Tuple[str,
         sidecar = os.path.splitext(file_path)[0] + ".xmp"
         if os.path.isfile(sidecar):
             if thread_logger.isEnabledFor(logging.INFO):
-                thread_logger.info(f"Reading XMP sidecar for\t{file_path}")
+                thread_logger.info(f"Reading XMP sidecar for\t{file_path}", extra={'taskname': os.path.basename(file_path)})
             return read_all_metadata(sidecar)
     return [], [], [], []
 
+# Function to extract face regions from metadata JSON data
 def extract_faces_from_data(data) -> List[Tuple[str, float, float, float, float]]:
     existing_faces = []
     def safe_float_convert(value):
@@ -402,11 +420,12 @@ def extract_faces_from_data(data) -> List[Tuple[str, float, float, float, float]
                     existing_faces.append((name, x, y, w, h))
     return existing_faces
 
+# Function to write metadata in batch using ExifTool
 def write_metadata_batch(image_path, face_regions: List[Tuple], keywords_to_add: Dict[str, List[str]], 
                         dry_run: bool, exiftool_path: str, use_sidecar: bool):
     if not face_regions and not any(keywords_to_add.values()):
         if thread_logger.isEnabledFor(logging.DEBUG):
-            thread_logger.debug(f"write_metadata_batch\tskipping write for\t{image_path}\t no face regions or keywords to add")
+            thread_logger.debug(f"write_metadata_batch\tskipping write for\t{image_path}\t no face regions or keywords to add", extra={'taskname': os.path.basename(image_path)})
         return True
     args = [exiftool_path, '-overwrite_original', '-fast']
     target = image_path
@@ -435,7 +454,7 @@ def write_metadata_batch(image_path, face_regions: List[Tuple], keywords_to_add:
             args.append(f'{prefix}+={keyword}')
     args.append(target)
     if thread_logger.isEnabledFor(logging.DEBUG):
-        thread_logger.debug(f"write_metadata_batch\tBatch write:\t{' '.join(args)}")
+        thread_logger.debug(f"write_metadata_batch\tBatch write:\t{' '.join(args)}", extra={'taskname': os.path.basename(image_path)})
     if not dry_run:
         try:
             result = subprocess.run(
@@ -447,23 +466,24 @@ def write_metadata_batch(image_path, face_regions: List[Tuple], keywords_to_add:
                 check=False
             )
             if result.returncode != 0:
-                thread_logger.error(f"write_metadata_batch\tExifTool error writing to {target}:\t{result.stderr.strip()}")
+                thread_logger.error(f"write_metadata_batch\tExifTool error writing to {target}:\t{result.stderr.strip()}", extra={'taskname': os.path.basename(image_path)})
                 return False
             else:
                 if thread_logger.isEnabledFor(logging.INFO):
-                    thread_logger.info(f"Wrote metadata to\t{target}")
+                    thread_logger.info(f"Wrote metadata to\t{target}", extra={'taskname': os.path.basename(image_path)})
                 return True
         except subprocess.TimeoutExpired:
-            thread_logger.error(f"write_metadata_batch\tTimeout writing to\t{image_path}")
+            thread_logger.error(f"write_metadata_batch\tTimeout writing to\t{image_path}", extra={'taskname': os.path.basename(image_path)})
             return False
         except Exception as e:
-            thread_logger.error(f"write_metadata_batch\tError writing to\t{image_path}:\t{str(e)}")
+            thread_logger.error(f"write_metadata_batch\tError writing to\t{image_path}:\t{str(e)}", extra={'taskname': os.path.basename(image_path)})
             return False
     return True
 
+# Function to process a single file and write face regions and keywords to metadata
 def process_file_keywords(full_path, face_list, args, keyword_hierarchy):
     if not os.path.isfile(full_path):
-        thread_logger.error(f"File not found: {full_path}")
+        thread_logger.error(f"File not found: {full_path}", extra={'taskname': os.path.basename(full_path)})
         return False
     fmt = face_list[0][0]
     use_sidecar = fmt.lower() in RAW_FORMATS
@@ -482,15 +502,15 @@ def process_file_keywords(full_path, face_list, args, keyword_hierarchy):
     existing_hierarchical_set = set(existing_hierarchical)
     for fmt, name, keyword_id, left, top, right, bottom, cw, ch, cx, cy in face_list:
         if thread_logger.isEnabledFor(logging.WARNING):   
-            thread_logger.warning(f"Processing {name}")
+            thread_logger.warning(f"Processing {name}", extra={'taskname': os.path.basename(full_path)})
         dup_type = is_duplicate(existing_faces, name, cw, ch, cx, cy)
         if dup_type:
             if thread_logger.isEnabledFor(logging.INFO):
-                thread_logger.info(f"Duplicate ({dup_type}): {name}")
+                thread_logger.info(f"Duplicate ({dup_type}): {name}", extra={'taskname': os.path.basename(full_path)})
             continue
         new_face_regions.append((name, cx, cy, cw, ch))
         if thread_logger.isEnabledFor(logging.INFO):
-            thread_logger.info(f"Queued Face '{name}'")
+            thread_logger.info(f"Queued Face '{name}'", extra={'taskname': os.path.basename(full_path)})
         if args.write_hierarchical_tags and keyword_id in keyword_hierarchy:
             hierarchical_keyword = keyword_hierarchy[keyword_id]
             simple_keyword = hierarchical_keyword.split('|')[-1] if '|' in hierarchical_keyword else hierarchical_keyword
@@ -498,17 +518,17 @@ def process_file_keywords(full_path, face_list, args, keyword_hierarchy):
                 keywords_to_add['keywords'].append(simple_keyword)
                 existing_keywords_set.add(simple_keyword)
                 if thread_logger.isEnabledFor(logging.INFO):
-                    thread_logger.info(f"Queued Keywords field '{simple_keyword}'")
+                    thread_logger.info(f"Queued Keywords field '{simple_keyword}'", extra={'taskname': os.path.basename(full_path)})
             if simple_keyword not in existing_subject_set:
                 keywords_to_add['subject'].append(simple_keyword)
                 existing_subject_set.add(simple_keyword)
                 if thread_logger.isEnabledFor(logging.INFO):
-                    thread_logger.info(f"Queued Subject field '{simple_keyword}'")
+                    thread_logger.info(f"Queued Subject field '{simple_keyword}'", extra={'taskname': os.path.basename(full_path)})
             if hierarchical_keyword not in existing_hierarchical_set:
                 keywords_to_add['hierarchical'].append(hierarchical_keyword)
                 existing_hierarchical_set.add(hierarchical_keyword)
                 if thread_logger.isEnabledFor(logging.INFO):
-                    thread_logger.info(f"Queued HierarchicalSubject field '{hierarchical_keyword}'")
+                    thread_logger.info(f"Queued HierarchicalSubject field '{hierarchical_keyword}'", extra={'taskname': os.path.basename(full_path)})
     total_keywords = sum(len(v) for v in keywords_to_add.values())
     if new_face_regions or total_keywords > 0:
         success = write_metadata_batch(
@@ -520,7 +540,7 @@ def process_file_keywords(full_path, face_list, args, keyword_hierarchy):
             action = "Wrote" if args.write else "Simulated write"
             face_count = len(new_face_regions)
             if thread_logger and thread_logger.isEnabledFor(logging.WARNING):
-                thread_logger.warning(f"{action} ({log_type}) batch: {face_count} faces, {total_keywords} total keywords to {full_path}")
+                thread_logger.warning(f"{action} ({log_type}) batch: {face_count} faces, {total_keywords} total keywords to {full_path}", extra={'taskname': os.path.basename(full_path)})
         return success
     return True
 
@@ -537,6 +557,7 @@ def main():
     keyword_hierarchy = {}
     face_data = []
 
+    # Define functions to load keywords and face data in parallel
     def load_keywords():
         nonlocal keyword_hierarchy
         if args.write_hierarchical_tags:
@@ -544,12 +565,14 @@ def main():
             if thread_logger.isEnabledFor(logging.WARNING):
                 thread_logger.warning(f'Loaded\t{len(keyword_hierarchy)} keyword hierarchies')
 
+    # Define function to load face data in parallel
     def load_faces():
         nonlocal face_data
         face_data = fetch_face_data_batch(args.catalog, args.batch_size)
         if thread_logger.isEnabledFor(logging.WARNING):
             thread_logger.warning(f'face regions:\t{len(face_data)}\tfound in\t{args.catalog}')
-
+    
+    # Start threads to load keywords and face data
     t1 = threading.Thread(target=load_keywords, name="DB-Keyword-Thread")
     t2 = threading.Thread(target=load_faces, name="DB-Face-Thread")
     t1.start()
@@ -563,6 +586,7 @@ def main():
         thread_logger.error("No face data found in catalog")
         return
 
+    # Prepare data for processing
     file_data = defaultdict(list)
     for row in face_data:
         full_path, fmt, name, keyword_id, left, top, right, bottom, cw, ch, cx, cy = row
@@ -571,12 +595,13 @@ def main():
     if thread_logger.isEnabledFor(logging.WARNING):
         thread_logger.warning(f'Processing {len(file_data)} unique image files')
 
+    # Determine number of threads to use
     cpu_count = os.cpu_count() or 4
     max_threads = args.max_threads
     num_threads = args.threads if args.threads > 0 else min(cpu_count * 2, max_threads)
 
     results = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads, thread_name_prefix="FileWorker") as executor:
         futures = {}
         for full_path, face_list in tqdm(file_data.items(), desc="Processing images", unit="files"):
             future = executor.submit(process_file_keywords, full_path, face_list, args, keyword_hierarchy)
