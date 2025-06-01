@@ -302,7 +302,7 @@ def is_duplicate(existing, name, cw, ch, cx, cy):
             return 'area'
     return None
 
-def extract_existing_metadata(file_path, exiftool_path) -> Tuple[List[Tuple[str, float, float, float, float]], List[str], List[str], List[str]]:
+def extract_existing_metadata(file_path, exiftool_path) -> Tuple[List[Tuple[str, float, float, float, float]], List[str], List[str], List[str], List[str]]:
     def read_all_metadata(target_path, is_sidecar):
         cmd = [
             exiftool_path, '-j', '-struct', '-fast',
@@ -310,6 +310,7 @@ def extract_existing_metadata(file_path, exiftool_path) -> Tuple[List[Tuple[str,
             '-Subject', '-HierarchicalSubject',
             '-RegionName', '-RegionType', '-RegionAreaX', '-RegionAreaY', 
             '-RegionAreaW', '-RegionAreaH', '-RegionInfo',
+            '-XMP-iptcExt:PersonInImage',
             target_path
         ]
         if thread_logger.isEnabledFor(logging.DEBUG):
@@ -325,29 +326,30 @@ def extract_existing_metadata(file_path, exiftool_path) -> Tuple[List[Tuple[str,
             )
             if result.returncode != 0:
                 thread_logger.warning(f"read_all_metadata\tExifTool warning on\t{target_path}:\t{result.stderr.strip()}", extra={'taskname': os.path.basename(file_path)})
-                return [], [], [], []
+                return [], [], [], [], []
             if not result.stdout.strip():
                 thread_logger.warning(f"read_all_metadata\tExifTool empty or malformed output on\t{target_path}:\t{result.stderr.strip()}", extra={'taskname': os.path.basename(file_path)})
-                return [], [], [], []
+                return [], [], [], [], []
             data_list = json.loads(result.stdout)
             if not data_list:
                 thread_logger.warning(f"read_all_metadata\tExifTool JSON load failed on\t{target_path}:\t{result.stderr.strip()}", extra={'taskname': os.path.basename(file_path)})
-                return [], [], [], []
+                return [], [], [], [], []
             data = data_list[0]
             existing_faces = extract_faces_from_data(data)
             keywords = normalize_to_list(data.get('Keywords')) if not is_sidecar else []
             subject = normalize_to_list(data.get('Subject'))
             hierarchical = normalize_to_list(data.get('HierarchicalSubject'))
-            return existing_faces, keywords, subject, hierarchical
+            persons_in_image = normalize_to_list(data.get('PersonInImage'))
+            return existing_faces, keywords, subject, hierarchical, persons_in_image
         except subprocess.TimeoutExpired:
             thread_logger.warning(f"read_all_metadata\tExifTool timeout on {target_path}", extra={'taskname': os.path.basename(file_path)})
-            return [], [], [], []
+            return [], [], [], [], []
         except json.JSONDecodeError as e:
             thread_logger.error(f"read_all_metadata\tJSON decode error for\t{target_path}:\t{e}", extra={'taskname': os.path.basename(file_path)})
-            return [], [], [], []
+            return [], [], [], [], []
         except Exception as e:
             thread_logger.error(f"read_all_metadata\tUnexpected error reading\t{target_path}:\t{str(e)}", extra={'taskname': os.path.basename(file_path)})
-            return [], [], [], []
+            return [], [], [], [], []
     def normalize_to_list(value):
         if value is None:
             return []
@@ -359,16 +361,16 @@ def extract_existing_metadata(file_path, exiftool_path) -> Tuple[List[Tuple[str,
             return []
     file_ext = os.path.splitext(file_path)[1].lower().lstrip('.')
     is_sidecar = file_ext == "xmp"
-    faces, keywords, subject, hierarchical = read_all_metadata(file_path, is_sidecar)
-    if faces or keywords or subject or hierarchical:
-        return faces, keywords, subject, hierarchical
+    faces, keywords, subject, hierarchical, persons_in_image = read_all_metadata(file_path, is_sidecar)
+    if faces or keywords or subject or hierarchical or persons_in_image:
+        return faces, keywords, subject, hierarchical, persons_in_image
     if file_ext in RAW_FORMATS:
         sidecar = os.path.splitext(file_path)[0] + ".xmp"
         if os.path.isfile(sidecar):
             if thread_logger.isEnabledFor(logging.INFO):
                 thread_logger.info(f"Reading XMP sidecar for\t{file_path}", extra={'taskname': os.path.basename(file_path)})
             return read_all_metadata(sidecar, True)
-    return [], [], [], []
+    return [], [], [], [], []
 
 # Function to extract face regions from metadata JSON data
 def extract_faces_from_data(data) -> List[Tuple[str, float, float, float, float]]:
@@ -448,7 +450,8 @@ def write_metadata_batch(image_path, face_regions: List[Tuple], keywords_to_add:
         keyword_mappings = {
             'keywords': '-Keywords',
             'subject': '-Subject',
-            'hierarchical': '-HierarchicalSubject'
+            'hierarchical': '-HierarchicalSubject',
+            'persons_in_image': '-XMP-iptcExt:PersonInImage'
         }
         for field, prefix in keyword_mappings.items():
             for keyword in keywords_to_add.get(field, []):
@@ -456,7 +459,8 @@ def write_metadata_batch(image_path, face_regions: List[Tuple], keywords_to_add:
     else:
         keyword_mappings = {
             'subject': '-XMP-dc:Subject',
-            'hierarchical': '-XMP-lr:HierarchicalSubject'
+            'hierarchical': '-XMP-lr:HierarchicalSubject',
+            'persons_in_image': '-XMP-iptcExt:PersonInImage'
         }
         for field, prefix in keyword_mappings.items():
             for keyword in keywords_to_add.get(field, []):
@@ -497,29 +501,31 @@ def process_file_keywords(full_path, face_list, args, keyword_hierarchy):
     fmt = face_list[0][0]
     use_sidecar = fmt.lower() in RAW_FORMATS
     log_type = "sidecar" if use_sidecar else "embedded"
-    existing_faces, existing_keywords, existing_subject, existing_hierarchical = extract_existing_metadata(
+    existing_faces, existing_keywords, existing_subject, existing_hierarchical, existing_persons_in_image = extract_existing_metadata(
         full_path, args.exiftool_path
     )
     new_face_regions = []
     keywords_to_add = {
         'keywords': [],
         'subject': [], 
-        'hierarchical': []
+        'hierarchical': [],
+        'persons_in_image': []
     }
     existing_keywords_set = set(existing_keywords)
     existing_subject_set = set(existing_subject)
     existing_hierarchical_set = set(existing_hierarchical)
+    existing_persons_set = set(existing_persons_in_image)
     for fmt, name, keyword_id, left, top, right, bottom, cw, ch, cx, cy in face_list:
         if thread_logger.isEnabledFor(logging.WARNING):   
             thread_logger.warning(f"Processing {name}", extra={'taskname': os.path.basename(full_path)})
         dup_type = is_duplicate(existing_faces, name, cw, ch, cx, cy)
-        if dup_type:
+        if not dup_type:
+            new_face_regions.append((name, cx, cy, cw, ch))
+            if thread_logger.isEnabledFor(logging.INFO):
+                thread_logger.info(f"Queued Face '{name}'", extra={'taskname': os.path.basename(full_path)})
+        else:
             if thread_logger.isEnabledFor(logging.INFO):
                 thread_logger.info(f"Duplicate ({dup_type}): {name}", extra={'taskname': os.path.basename(full_path)})
-            continue
-        new_face_regions.append((name, cx, cy, cw, ch))
-        if thread_logger.isEnabledFor(logging.INFO):
-            thread_logger.info(f"Queued Face '{name}'", extra={'taskname': os.path.basename(full_path)})
         if args.write_hierarchical_tags and keyword_id in keyword_hierarchy:
             hierarchical_keyword = keyword_hierarchy[keyword_id]
             simple_keyword = hierarchical_keyword.split('|')[-1] if '|' in hierarchical_keyword else hierarchical_keyword
@@ -533,6 +539,11 @@ def process_file_keywords(full_path, face_list, args, keyword_hierarchy):
                 existing_subject_set.add(simple_keyword)
                 if thread_logger.isEnabledFor(logging.INFO):
                     thread_logger.info(f"Queued Subject field '{simple_keyword}'", extra={'taskname': os.path.basename(full_path)})
+            if simple_keyword not in existing_persons_set:
+                keywords_to_add['persons_in_image'].append(simple_keyword)
+                existing_persons_set.add(simple_keyword)
+                if thread_logger.isEnabledFor(logging.INFO):
+                    thread_logger.info(f"Queued Persons in Image field '{simple_keyword}'", extra={'taskname': os.path.basename(full_path)})
             if hierarchical_keyword not in existing_hierarchical_set:
                 keywords_to_add['hierarchical'].append(hierarchical_keyword)
                 existing_hierarchical_set.add(hierarchical_keyword)
