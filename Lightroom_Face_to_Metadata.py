@@ -303,10 +303,11 @@ def is_duplicate(existing, name, cw, ch, cx, cy):
     return None
 
 def extract_existing_metadata(file_path, exiftool_path) -> Tuple[List[Tuple[str, float, float, float, float]], List[str], List[str], List[str]]:
-    def read_all_metadata(target_path):
+    def read_all_metadata(target_path, is_sidecar):
         cmd = [
             exiftool_path, '-j', '-struct', '-fast',
-            '-Keywords', '-Subject', '-HierarchicalSubject',
+            *([] if is_sidecar else ['-Keywords']),
+            '-Subject', '-HierarchicalSubject',
             '-RegionName', '-RegionType', '-RegionAreaX', '-RegionAreaY', 
             '-RegionAreaW', '-RegionAreaH', '-RegionInfo',
             target_path
@@ -334,7 +335,7 @@ def extract_existing_metadata(file_path, exiftool_path) -> Tuple[List[Tuple[str,
                 return [], [], [], []
             data = data_list[0]
             existing_faces = extract_faces_from_data(data)
-            keywords = normalize_to_list(data.get('Keywords'))
+            keywords = normalize_to_list(data.get('Keywords')) if not is_sidecar else []
             subject = normalize_to_list(data.get('Subject'))
             hierarchical = normalize_to_list(data.get('HierarchicalSubject'))
             return existing_faces, keywords, subject, hierarchical
@@ -356,16 +357,17 @@ def extract_existing_metadata(file_path, exiftool_path) -> Tuple[List[Tuple[str,
             return [value]
         else:
             return []
-    faces, keywords, subject, hierarchical = read_all_metadata(file_path)
+    file_ext = os.path.splitext(file_path)[1].lower().lstrip('.')
+    is_sidecar = file_ext == "xmp"
+    faces, keywords, subject, hierarchical = read_all_metadata(file_path, is_sidecar)
     if faces or keywords or subject or hierarchical:
         return faces, keywords, subject, hierarchical
-    file_ext = os.path.splitext(file_path)[1].lower().lstrip('.')
     if file_ext in RAW_FORMATS:
         sidecar = os.path.splitext(file_path)[0] + ".xmp"
         if os.path.isfile(sidecar):
             if thread_logger.isEnabledFor(logging.INFO):
                 thread_logger.info(f"Reading XMP sidecar for\t{file_path}", extra={'taskname': os.path.basename(file_path)})
-            return read_all_metadata(sidecar)
+            return read_all_metadata(sidecar, True)
     return [], [], [], []
 
 # Function to extract face regions from metadata JSON data
@@ -446,9 +448,24 @@ def write_metadata_batch(image_path, face_regions: List[Tuple], keywords_to_add:
         'subject': '-XMP-dc:Subject' if use_sidecar else '-Subject',
         'hierarchical': '-XMP-lr:HierarchicalSubject' if use_sidecar else '-HierarchicalSubject'
     }
-    for field, prefix in keyword_mappings.items():
-        for keyword in keywords_to_add.get(field, []):
-            args.append(f'{prefix}+={keyword}')
+    # Only write keywords if not a sidecar file
+    if not use_sidecar:
+        keyword_mappings = {
+            'keywords': '-Keywords',
+            'subject': '-Subject',
+            'hierarchical': '-HierarchicalSubject'
+        }
+        for field, prefix in keyword_mappings.items():
+            for keyword in keywords_to_add.get(field, []):
+                args.append(f'{prefix}+={keyword}')
+    else:
+        keyword_mappings = {
+            'subject': '-XMP-dc:Subject',
+            'hierarchical': '-XMP-lr:HierarchicalSubject'
+        }
+        for field, prefix in keyword_mappings.items():
+            for keyword in keywords_to_add.get(field, []):
+                args.append(f'{prefix}+={keyword}')
     args.append(target)
     if thread_logger.isEnabledFor(logging.DEBUG):
         thread_logger.debug(f"write_metadata_batch\tBatch write:\t{' '.join(args)}", extra={'taskname': os.path.basename(image_path)})
