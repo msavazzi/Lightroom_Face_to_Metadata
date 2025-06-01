@@ -443,11 +443,6 @@ def write_metadata_batch(image_path, face_regions: List[Tuple], keywords_to_add:
                 f'{field_prefix}RegionAreaW+={w}',
                 f'{field_prefix}RegionAreaH+={h}'
             ])
-    keyword_mappings = {
-        'keywords': '-XMP-dc:Keywords' if use_sidecar else '-Keywords',
-        'subject': '-XMP-dc:Subject' if use_sidecar else '-Subject',
-        'hierarchical': '-XMP-lr:HierarchicalSubject' if use_sidecar else '-HierarchicalSubject'
-    }
     # Only write keywords if not a sidecar file
     if not use_sidecar:
         keyword_mappings = {
