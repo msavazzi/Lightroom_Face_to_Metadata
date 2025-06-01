@@ -302,11 +302,30 @@ def is_duplicate(existing, name, cw, ch, cx, cy):
             return 'area'
     return None
 
-def extract_existing_metadata(file_path, exiftool_path) -> Tuple[List[Tuple[str, float, float, float, float]], List[str], List[str], List[str], List[str]]:
-    def read_all_metadata(target_path, is_sidecar):
+# Function to check if an image has IPTC data using ExifTool
+def has_iptc_data(image_path, exiftool_path):
+    cmd = [exiftool_path, '-b', '-IPTC:all', image_path]
+    try:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+            check=False
+        )
+        # If there is any output, IPTC data exists
+        return bool(result.stdout.strip())
+    except Exception as e:
+        thread_logger.error(f"has_iptc_data\tError checking IPTC data for {image_path}: {e}")
+        return False
+
+def extract_existing_metadata(file_path, exiftool_path,  is_sidecar, iptc_available) -> Tuple[List[Tuple[str, float, float, float, float]], List[str], List[str], List[str], List[str]]:
+    # Function to read all metadata from an image file using ExifTool
+    def read_all_metadata(target_path):
         cmd = [
             exiftool_path, '-j', '-struct', '-fast',
-            *([] if is_sidecar else ['-Keywords']),
+            *(['-Keywords'] if (not is_sidecar and iptc_available) else []),
             '-Subject', '-HierarchicalSubject',
             '-RegionName', '-RegionType', '-RegionAreaX', '-RegionAreaY', 
             '-RegionAreaW', '-RegionAreaH', '-RegionInfo',
@@ -326,7 +345,7 @@ def extract_existing_metadata(file_path, exiftool_path) -> Tuple[List[Tuple[str,
             )
             if result.returncode != 0:
                 thread_logger.warning(f"read_all_metadata\tExifTool warning on\t{target_path}:\t{result.stderr.strip()}", extra={'taskname': os.path.basename(file_path)})
-                return [], [], [], [], []
+                return [], [], [], [], [] 
             if not result.stdout.strip():
                 thread_logger.warning(f"read_all_metadata\tExifTool empty or malformed output on\t{target_path}:\t{result.stderr.strip()}", extra={'taskname': os.path.basename(file_path)})
                 return [], [], [], [], []
@@ -336,7 +355,7 @@ def extract_existing_metadata(file_path, exiftool_path) -> Tuple[List[Tuple[str,
                 return [], [], [], [], []
             data = data_list[0]
             existing_faces = extract_faces_from_data(data)
-            keywords = normalize_to_list(data.get('Keywords')) if not is_sidecar else []
+            keywords = normalize_to_list(data.get('Keywords')) if (not is_sidecar and iptc_available) else []
             subject = normalize_to_list(data.get('Subject'))
             hierarchical = normalize_to_list(data.get('HierarchicalSubject'))
             persons_in_image = normalize_to_list(data.get('PersonInImage'))
@@ -350,6 +369,8 @@ def extract_existing_metadata(file_path, exiftool_path) -> Tuple[List[Tuple[str,
         except Exception as e:
             thread_logger.error(f"read_all_metadata\tUnexpected error reading\t{target_path}:\t{str(e)}", extra={'taskname': os.path.basename(file_path)})
             return [], [], [], [], []
+        
+    # Function to normalize a value to a list
     def normalize_to_list(value):
         if value is None:
             return []
@@ -359,17 +380,20 @@ def extract_existing_metadata(file_path, exiftool_path) -> Tuple[List[Tuple[str,
             return [value]
         else:
             return []
-    file_ext = os.path.splitext(file_path)[1].lower().lstrip('.')
-    is_sidecar = file_ext == "xmp"
-    faces, keywords, subject, hierarchical, persons_in_image = read_all_metadata(file_path, is_sidecar)
-    if faces or keywords or subject or hierarchical or persons_in_image:
-        return faces, keywords, subject, hierarchical, persons_in_image
-    if file_ext in RAW_FORMATS:
+        
+    if is_sidecar:
         sidecar = os.path.splitext(file_path)[0] + ".xmp"
         if os.path.isfile(sidecar):
             if thread_logger.isEnabledFor(logging.INFO):
                 thread_logger.info(f"Reading XMP sidecar for\t{file_path}", extra={'taskname': os.path.basename(file_path)})
-            return read_all_metadata(sidecar, True)
+            file_path = sidecar
+        else:
+            thread_logger.warning(f"XMP sidecar does not exist for\t{sidecar}", extra={'taskname': os.path.basename(file_path)})
+
+    faces, keywords, subject, hierarchical, persons_in_image = read_all_metadata(file_path)
+    if faces or keywords or subject or hierarchical or persons_in_image:
+        return faces, keywords, subject, hierarchical, persons_in_image
+        
     return [], [], [], [], []
 
 # Function to extract face regions from metadata JSON data
@@ -423,7 +447,7 @@ def extract_faces_from_data(data) -> List[Tuple[str, float, float, float, float]
 
 # Function to write metadata in batch using ExifTool
 def write_metadata_batch(image_path, face_regions: List[Tuple], keywords_to_add: Dict[str, List[str]], 
-                        dry_run: bool, exiftool_path: str, use_sidecar: bool):
+                        dry_run: bool, exiftool_path: str, use_sidecar: bool, iptc_available: bool) -> bool:
     if not face_regions and not any(keywords_to_add.values()):
         if thread_logger.isEnabledFor(logging.DEBUG):
             thread_logger.debug(f"write_metadata_batch\tskipping write for\t{image_path}\t no face regions or keywords to add", extra={'taskname': os.path.basename(image_path)})
@@ -445,26 +469,34 @@ def write_metadata_batch(image_path, face_regions: List[Tuple], keywords_to_add:
                 f'{field_prefix}RegionAreaW+={w}',
                 f'{field_prefix}RegionAreaH+={h}'
             ])
+
     # Only write keywords if not a sidecar file
-    if not use_sidecar:
-        keyword_mappings = {
-            'keywords': '-Keywords',
-            'subject': '-Subject',
-            'hierarchical': '-HierarchicalSubject',
-            'persons_in_image': '-XMP-iptcExt:PersonInImage'
-        }
-        for field, prefix in keyword_mappings.items():
-            for keyword in keywords_to_add.get(field, []):
-                args.append(f'{prefix}+={keyword}')
-    else:
+    if use_sidecar:
         keyword_mappings = {
             'subject': '-XMP-dc:Subject',
             'hierarchical': '-XMP-lr:HierarchicalSubject',
             'persons_in_image': '-XMP-iptcExt:PersonInImage'
         }
-        for field, prefix in keyword_mappings.items():
-            for keyword in keywords_to_add.get(field, []):
-                args.append(f'{prefix}+={keyword}')
+    else:
+        # If IPTC data is available, write keywords
+        if iptc_available:
+            keyword_mappings = {
+                'keywords': '-Keywords',
+                'subject': '-Subject',
+                'hierarchical': '-HierarchicalSubject',
+                'persons_in_image': '-XMP-iptcExt:PersonInImage'
+            }
+        else:
+            keyword_mappings = {
+                'subject': '-XMP-dc:Subject',
+                'hierarchical': '-XMP-lr:HierarchicalSubject',
+                'persons_in_image': '-XMP-iptcExt:PersonInImage'
+            }
+
+    for field, prefix in keyword_mappings.items():
+        for keyword in keywords_to_add.get(field, []):
+            args.append(f'{prefix}+={keyword}')
+
     args.append(target)
     if thread_logger.isEnabledFor(logging.DEBUG):
         thread_logger.debug(f"write_metadata_batch\tBatch write:\t{' '.join(args)}", extra={'taskname': os.path.basename(image_path)})
@@ -499,10 +531,19 @@ def process_file_keywords(full_path, face_list, args, keyword_hierarchy):
         thread_logger.error(f"File not found: {full_path}", extra={'taskname': os.path.basename(full_path)})
         return False
     fmt = face_list[0][0]
+
     use_sidecar = fmt.lower() in RAW_FORMATS
     log_type = "sidecar" if use_sidecar else "embedded"
+
+    iptc_available = False
+    if not use_sidecar:
+        iptc_available = has_iptc_data(full_path, args.exiftool_path)
+        if thread_logger.isEnabledFor(logging.INFO):
+            thread_logger.info(f"IPTC data:\t{'found' if iptc_available else 'not found'}", extra={'taskname': os.path.basename(full_path)})
+
+
     existing_faces, existing_keywords, existing_subject, existing_hierarchical, existing_persons_in_image = extract_existing_metadata(
-        full_path, args.exiftool_path
+        full_path, args.exiftool_path, use_sidecar, iptc_available
     )
     new_face_regions = []
     keywords_to_add = {
@@ -529,7 +570,7 @@ def process_file_keywords(full_path, face_list, args, keyword_hierarchy):
         if args.write_hierarchical_tags and keyword_id in keyword_hierarchy:
             hierarchical_keyword = keyword_hierarchy[keyword_id]
             simple_keyword = hierarchical_keyword.split('|')[-1] if '|' in hierarchical_keyword else hierarchical_keyword
-            if simple_keyword not in existing_keywords_set:
+            if (not use_sidecar and iptc_available) and simple_keyword not in existing_keywords_set:
                 keywords_to_add['keywords'].append(simple_keyword)
                 existing_keywords_set.add(simple_keyword)
                 if thread_logger.isEnabledFor(logging.INFO):
@@ -554,7 +595,7 @@ def process_file_keywords(full_path, face_list, args, keyword_hierarchy):
         success = write_metadata_batch(
             full_path, new_face_regions, keywords_to_add,
             dry_run=not args.write, exiftool_path=args.exiftool_path,
-            use_sidecar=use_sidecar
+            use_sidecar=use_sidecar, iptc_available=iptc_available
         )
         if success:
             action = "Wrote" if args.write else "Simulated write"
