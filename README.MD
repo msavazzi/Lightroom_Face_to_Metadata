@@ -4,6 +4,15 @@
 
 **Script write Lightroom face data and tags to image metadata using ExifTool**
 
+
+*This script is intended for educational purposes only. Use at your own risk.*
+
+*It is recommended to backup your Lightroom catalog and images before running this script.*
+
+*This script is provided "as is" without warranty of any kind, either expressed or implied.*
+
+*The author is not responsible for any damage or loss of data that may occur as a result of using this script.*
+   
   
 
 Based on the database schema from: ***Lightroom Classic 14.3*** analyzed as *SQLite 3 Database*
@@ -63,11 +72,6 @@ Usage Examples:
   
 
 
-*This script is intended for educational purposes only. Use at your own risk.*
-*It is recommended to backup your Lightroom catalog and images before running this script.*
-*This script is provided "as is" without warranty of any kind, either expressed or implied.*
-*The author is not responsible for any damage or loss of data that may occur as a result of using this script.*
-   
 *Copyright (c) 2025, Massimo Savazzi* 
    
 *All rights reserved.*
