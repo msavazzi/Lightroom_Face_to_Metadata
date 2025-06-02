@@ -1,3 +1,7 @@
 Lightroom_Face_to_Metadata.prof
 log.txt
-launch.json
+build/
+dist/
+Lightroom_Face_to_Metadata.spec
+Lightroom_Face_to_Metadata.png
+.vscode/
