@@ -447,7 +447,7 @@ def extract_existing_metadata(file_path, exiftool_path,  is_sidecar, iptc_availa
                 '-Subject', '-HierarchicalSubject',
                 '-RegionName', '-RegionType', '-RegionAreaX', '-RegionAreaY', 
                 '-RegionAreaW', '-RegionAreaH', '-RegionInfo',
-                '-XMP-iptcExt:PersonInImage',
+                '-PersonInImage',
                 target_path
             ]
             if thread_logger.isEnabledFor(logging.DEBUG):
@@ -586,6 +586,8 @@ def write_metadata_batch(image_path, face_regions: List[Tuple], keywords_to_add:
                     f'{field_prefix}RegionAreaH+={h}'
                 ])
 
+        # As per best practice on ExifTool documentation, we use the the simplest form of the tag name
+        # and we add the prefix only if the tag is in a sidecar file as they can have only XMP tags
         # Only write keywords if not a sidecar file
         if use_sidecar:
             keyword_mappings = {
@@ -600,13 +602,13 @@ def write_metadata_batch(image_path, face_regions: List[Tuple], keywords_to_add:
                     'keywords': '-Keywords',
                     'subject': '-Subject',
                     'hierarchical': '-HierarchicalSubject',
-                    'persons_in_image': '-XMP-iptcExt:PersonInImage'
+                    'persons_in_image': '-PersonInImage'
                 }
             else:
                 keyword_mappings = {
-                    'subject': '-XMP-dc:Subject',
-                    'hierarchical': '-XMP-lr:HierarchicalSubject',
-                    'persons_in_image': '-XMP-iptcExt:PersonInImage'
+                    'subject': '-Subject',
+                    'hierarchical': '-HierarchicalSubject',
+                    'persons_in_image': '-PersonInImage'
                 }
 
         for field, prefix in keyword_mappings.items():
@@ -665,6 +667,7 @@ def process_file_keywords(full_path, face_list, args, keyword_hierarchy):
         existing_subject_set = set(existing_subject)
         existing_hierarchical_set = set(existing_hierarchical)
         existing_persons_set = set(existing_persons_in_image)
+        # Add existing faces to a set for quick lookup
         for fmt, name, keyword_id, left, top, right, bottom, cw, ch, cx, cy in face_list:
             if thread_logger.isEnabledFor(logging.WARNING):   
                 thread_logger.warning(f"Processing {name}", extra={'taskname': os.path.basename(full_path)})
@@ -676,6 +679,7 @@ def process_file_keywords(full_path, face_list, args, keyword_hierarchy):
             else:
                 if thread_logger.isEnabledFor(logging.INFO):
                     thread_logger.info(f"Duplicate ({dup_type}): {name}", extra={'taskname': os.path.basename(full_path)})
+            # Check if the keyword_id is in the hierarchy and add keywords accordingly
             if args.write_hierarchical_tags and keyword_id in keyword_hierarchy:
                 hierarchical_keyword = keyword_hierarchy[keyword_id]
                 simple_keyword = hierarchical_keyword.split('|')[-1] if '|' in hierarchical_keyword else hierarchical_keyword
@@ -693,13 +697,14 @@ def process_file_keywords(full_path, face_list, args, keyword_hierarchy):
                     keywords_to_add['persons_in_image'].append(simple_keyword)
                     existing_persons_set.add(simple_keyword)
                     if thread_logger.isEnabledFor(logging.INFO):
-                        thread_logger.info(f"Queued Persons in Image field '{simple_keyword}'", extra={'taskname': os.path.basename(full_path)})
+                        thread_logger.info(f"Queued PersonsInImage field '{simple_keyword}'", extra={'taskname': os.path.basename(full_path)})
                 if hierarchical_keyword not in existing_hierarchical_set:
                     keywords_to_add['hierarchical'].append(hierarchical_keyword)
                     existing_hierarchical_set.add(hierarchical_keyword)
                     if thread_logger.isEnabledFor(logging.INFO):
                         thread_logger.info(f"Queued HierarchicalSubject field '{hierarchical_keyword}'", extra={'taskname': os.path.basename(full_path)})
         total_keywords = sum(len(v) for v in keywords_to_add.values())
+        # If no new face regions or keywords to add, skip writing
         if new_face_regions or total_keywords > 0:
             success = write_metadata_batch(
                 full_path, new_face_regions, keywords_to_add,
@@ -765,9 +770,10 @@ def main():
     t2.join()
 
     db_pool.close_all()
-
+    
+    # Check if any face data was loaded
     if not face_data:
-        thread_logger.warning("No face data found in catalog")
+        thread_logger.critical("No face data found in catalog")
         return
 
     # Prepare data for processing
