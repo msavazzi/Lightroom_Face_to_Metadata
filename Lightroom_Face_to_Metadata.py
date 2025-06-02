@@ -680,7 +680,7 @@ def process_file_keywords(full_path, face_list, args, keyword_hierarchy):
                 if thread_logger.isEnabledFor(logging.INFO):
                     thread_logger.info(f"Duplicate ({dup_type}): {name}", extra={'taskname': os.path.basename(full_path)})
             # Check if the keyword_id is in the hierarchy and add keywords accordingly
-            if args.write_hierarchical_tags and keyword_id in keyword_hierarchy:
+            if args.tags and keyword_id in keyword_hierarchy:
                 hierarchical_keyword = keyword_hierarchy[keyword_id]
                 simple_keyword = hierarchical_keyword.split('|')[-1] if '|' in hierarchical_keyword else hierarchical_keyword
                 if (not use_sidecar and iptc_available) and simple_keyword not in existing_keywords_set:
@@ -742,7 +742,7 @@ def main():
     def load_keywords():
         nonlocal keyword_hierarchy
         start = time.time()
-        if args.write_hierarchical_tags:
+        if args.tags:
             keyword_hierarchy = fetch_keyword_hierarchy(args.catalog, args.batch_size)
             if thread_logger.isEnabledFor(logging.WARNING):
                 thread_logger.warning(f'Loaded\t{len(keyword_hierarchy)} keyword hierarchies')
