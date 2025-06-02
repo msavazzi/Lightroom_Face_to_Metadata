@@ -212,6 +212,12 @@ class ExifToolProcess:
             finally:
                 self.process = None
 
+# Custom file handler to flush the log file after each write
+class FlushFileHandler(logging.FileHandler):
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
 # Function to get or create a thread-local ExifTool process
 def get_exiftool_process(exiftool_path: str, thread_id:str) -> ExifToolProcess:
     if not hasattr(thread_local, 'exiftool_process'):
@@ -247,7 +253,7 @@ def init_logging(log_path: str, session_id: str, log_level: str):
         fmt='%(asctime)s\t[Session {session_id}]\t[%(threadName)s]\t%(taskname)s\t%(levelname)s\t%(message)s'.format(session_id=session_id),
         datefmt='%Y-%m-%d %H:%M:%S'
     )
-    handler = logging.FileHandler(log_path, encoding='utf-8')
+    handler = FlushFileHandler(log_path, encoding='utf-8')
     handler.setFormatter(formatter)
     handler.addFilter(TaskNameFilter())
     logger = logging.getLogger()
