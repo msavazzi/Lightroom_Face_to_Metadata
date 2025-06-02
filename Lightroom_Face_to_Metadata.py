@@ -921,94 +921,6 @@ def run_with_args(args, progress_callback=None):
     globals()['tqdm'] = orig_tqdm
 
 def launch_tk_gui():
-    args = get_arg_defaults()
-    root = tk.Tk()
-    root.title("Lightroom Face Metadata Sync")
-    try:
-        root.iconbitmap('Lightroom_Face_to_Metadata.ico')
-    except Exception:
-        pass  # Ignore if icon file is missing or not supported
-
-    fields = [
-        ('catalog', 'Lightroom Catalog (.lrcat)', 'file'),
-        ('log', 'Log File', 'file'),
-        ('write', 'Enable Writing', 'bool'),
-        ('exiftool_path', 'ExifTool Path', 'file'),
-        ('log_level', 'Log Level', 'choice', ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']),
-        ('tags', 'Write Tags', 'bool'),
-        ('profile', 'Profile Output', 'file'),
-        ('batch_size', 'Batch Size', 'int'),
-        ('threads', 'Threads', 'int'),
-        ('max_threads', 'Max Threads', 'int'),
-    ]
-    widgets = {}
-    row = 0
-    for key, label, typ, *opts in fields:
-        tk.Label(root, text=label).grid(row=row, column=0, sticky='w')
-        if typ == 'file':
-            entry = tk.Entry(root, width=50)
-            entry.insert(0, str(args.get(key, '')))  # <-- fix here
-            entry.grid(row=row, column=1)
-            def browse(entry=entry, key=key):
-                if key == 'catalog':
-                    f = filedialog.askopenfilename(filetypes=[('Lightroom Catalog', '*.lrcat')])
-                elif key == 'log':
-                    f = filedialog.asksaveasfilename(defaultextension='.txt')
-                elif key == 'exiftool-path':
-                    f = filedialog.askopenfilename()
-                elif key == 'profile':
-                    f = filedialog.asksaveasfilename(defaultextension='.prof')
-                else:
-                    f = filedialog.askopenfilename()
-                if f:
-                    entry.delete(0, tk.END)
-                    entry.insert(0, f)
-            btn = tk.Button(root, text="Browse", command=browse)
-            btn.grid(row=row, column=2)
-            widgets[key] = entry
-        elif typ == 'bool':
-            var = tk.BooleanVar(value=bool(args.get(key, False)))
-            chk = tk.Checkbutton(root, variable=var)
-            chk.grid(row=row, column=1, sticky='w')
-            widgets[key] = var
-        elif typ == 'choice':
-            var = tk.StringVar(value=args.get(key, opts[0][0]))
-            combo = ttk.Combobox(root, textvariable=var, values=opts[0], state='readonly')
-            combo.grid(row=row, column=1, sticky='w')
-            widgets[key] = var
-        elif typ == 'int':
-            val = args.get(key, 0)
-            try:
-                val = int(val)
-            except Exception:
-                val = 0
-            var = tk.StringVar(value=str(val))
-            entry = tk.Entry(root, textvariable=var, width=10)
-            entry.grid(row=row, column=1, sticky='w')
-            widgets[key] = var
-        row += 1
-
-    # Add two progress bars
-    label1 = tk.Label(root, text="Processing images")
-    label1.grid(row=row, column=0, sticky='w')
-    row += 1
-    progress1 = ttk.Progressbar(root, orient='horizontal', length=400, mode='determinate')
-    progress1.grid(row=row, column=0, columnspan=3, pady=5)
-    row += 1
-    status1 = tk.Label(root, text="")
-    status1.grid(row=row, column=0, columnspan=3)
-    row += 1
-    label2 = tk.Label(root, text="Waiting for threads")
-    label2.grid(row=row, column=0, sticky='w')
-    row += 1
-    progress2 = ttk.Progressbar(root, orient='horizontal', length=400, mode='determinate')
-    progress2.grid(row=row, column=0, columnspan=3, pady=5)
-    row += 1
-    status2 = tk.Label(root, text="")
-    status2.grid(row=row, column=0, columnspan=3)
-    row += 1
-    status = tk.Label(root, text="")
-    status.grid(row=row, column=0, columnspan=3)
 
     def on_run():
         # Gather args from widgets
@@ -1040,6 +952,7 @@ def launch_tk_gui():
         progress2['value'] = 0
         status['text'] = "Running..."
         root.update()
+
         # Run in thread to avoid blocking UI
         def run_job():
             try:
@@ -1064,10 +977,116 @@ def launch_tk_gui():
                         w.config(state='normal')
         threading.Thread(target=run_job, daemon=True).start()
 
-    run_btn = tk.Button(root, text="Run", command=on_run)
-    run_btn.grid(row=row+2, column=0, pady=10)
-    quit_btn = tk.Button(root, text="Quit", command=root.destroy)
-    quit_btn.grid(row=row+2, column=1, pady=10)
+    args = get_arg_defaults()
+    root = tk.Tk()
+    root.title("Lightroom Face Metadata Sync")
+    try:
+        root.iconbitmap('Lightroom_Face_to_Metadata.ico')
+    except Exception:
+        pass  # Ignore if icon file is missing or not supported
+    
+    # Set minimum window size (width x height)
+    root.minsize(500, 500)
+
+    # Allow columns to expand with window resize
+    root.columnconfigure(0, weight=0)
+    root.columnconfigure(1, weight=3)
+    root.columnconfigure(2, weight=0)
+
+    fields = [
+        ('catalog', 'Lightroom Catalog (.lrcat)', 'file'),
+        ('log', 'Log File', 'file'),
+        ('write', 'Enable Writing', 'bool'),
+        ('exiftool_path', 'ExifTool Path', 'file'),
+        ('log_level', 'Log Level', 'choice', ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']),
+        ('tags', 'Write Tags', 'bool'),
+        ('profile', 'Profile Output', 'file'),
+        ('batch_size', 'Batch Size', 'int'),
+        ('threads', 'Threads', 'int'),
+        ('max_threads', 'Max Threads', 'int'),
+    ]
+    widgets = {}
+    row = 0
+    for key, label, typ, *opts in fields:
+        tk.Label(root, text=label).grid(row=row, column=0, sticky='w', padx=(10, 0))
+        if typ == 'file':
+            entry = tk.Entry(root, width=50)
+            entry.insert(0, str(args.get(key, '')))
+            entry.grid(row=row, column=1, sticky='ew', padx=(0, 5))
+            def browse(entry=entry, key=key):
+                if key == 'catalog':
+                    f = filedialog.askopenfilename(filetypes=[('Lightroom Catalog', '*.lrcat')])
+                elif key == 'log':
+                    f = filedialog.asksaveasfilename(defaultextension='.txt')
+                elif key == 'exiftool-path':
+                    f = filedialog.askopenfilename()
+                elif key == 'profile':
+                    f = filedialog.asksaveasfilename(defaultextension='.prof')
+                else:
+                    f = filedialog.askopenfilename()
+                if f:
+                    entry.delete(0, tk.END)
+                    entry.insert(0, f)
+            btn = tk.Button(root, text="Browse", command=browse)
+            btn.grid(row=row, column=2, padx=(0, 10))
+            widgets[key] = entry
+        elif typ == 'bool':
+            var = tk.BooleanVar(value=bool(args.get(key, False)))
+            chk = tk.Checkbutton(root, variable=var)
+            chk.grid(row=row, column=1, sticky='w', padx=(0, 5))
+            widgets[key] = var
+        elif typ == 'choice':
+            var = tk.StringVar(value=args.get(key, opts[0][0]))
+            combo = ttk.Combobox(root, textvariable=var, values=opts[0], state='readonly')
+            combo.grid(row=row, column=1, sticky='w', padx=(0, 5))
+            widgets[key] = var
+        elif typ == 'int':
+            val = args.get(key, 0)
+            try:
+                val = int(val)
+            except Exception:
+                val = 0
+            var = tk.StringVar(value=str(val))
+            entry = tk.Entry(root, textvariable=var, width=10)
+            entry.grid(row=row, column=1, sticky='w', padx=(0, 5))
+            widgets[key] = var
+        row += 1
+
+    # Add two progress bars
+    label1 = tk.Label(root, text="Processing images")
+    label1.grid(row=row, column=0, sticky='w', padx=(5, 0))
+    row += 1
+    progress1 = ttk.Progressbar(root, orient='horizontal', length=400, mode='determinate')
+    progress1.grid(row=row, column=0, columnspan=3, pady=5, sticky='ew', padx=10)
+    root.rowconfigure(row, weight=0)
+    row += 1
+    status1 = tk.Label(root, text="")
+    status1.grid(row=row, column=0, columnspan=3, sticky='ew', padx=10)
+    row += 1
+    label2 = tk.Label(root, text="Waiting for threads")
+    label2.grid(row=row, column=0, sticky='w', padx=(5, 0))
+    row += 1
+    progress2 = ttk.Progressbar(root, orient='horizontal', length=400, mode='determinate')
+    progress2.grid(row=row, column=0, columnspan=3, pady=5, sticky='ew', padx=10)
+    root.rowconfigure(row, weight=0)
+    row += 1
+    status2 = tk.Label(root, text="")
+    status2.grid(row=row, column=0, columnspan=3, sticky='ew', padx=10)
+    row += 1
+    status = tk.Label(root, text="")
+    status.grid(row=row, column=0, columnspan=3, sticky='ew', padx=10)
+
+    button_frame = tk.Frame(root)
+    button_frame.grid(row=row+2, column=0, columnspan=3, sticky='ew', pady=10, padx=10)
+    root.rowconfigure(row+2, weight=1)
+    button_frame.columnconfigure(0, weight=1)
+    button_frame.columnconfigure(1, weight=1)
+
+    run_btn = tk.Button(button_frame, text="Run", command=on_run)
+    run_btn.grid(row=0, column=0, padx=5, sticky='ew')
+    quit_btn = tk.Button(button_frame, text="Quit", command=root.destroy)
+    quit_btn.grid(row=0, column=1, padx=5, sticky='ew')
+
     root.mainloop()
 
 if __name__ == '__main__':
