@@ -845,30 +845,26 @@ def get_arg_defaults():
 
     # Return the command line, if not present, previous run config or default values
     def get_val(key, default=''):
-        # 1. Use command line if present (not None and not empty string)
         val = getattr(args_cmdline, key, None)
         if val not in [None, '']:
             return val
-        # 2. Use last run config if present
-        if hasattr(args_last_run, key):
-            val2 = getattr(args_last_run, key)
-            if val2 not in [None, '']:
-                return val2
-        # 3. Fallback to default
+        val2 = getattr(args_last_run, key, None) if hasattr(args_last_run, key) else None
+        if val2 not in [None, '']:
+            return val2
         return default
 
      # Use parse_known_args and do NOT require catalog
     parser = argparse.ArgumentParser()
     parser.add_argument('--catalog')
-    parser.add_argument('--log', default='log.txt')
+    parser.add_argument('--log')
     parser.add_argument('--write', action='store_true')
-    parser.add_argument('--exiftool-path', default='exiftool')
-    parser.add_argument('--log-level', default='INFO')
+    parser.add_argument('--exiftool-path')
+    parser.add_argument('--log-level')
     parser.add_argument('--tags', action='store_true')
-    parser.add_argument('--profile', default=None)
-    parser.add_argument('--batch-size', type=int, default=1000)
-    parser.add_argument('--threads', type=int, default=0)
-    parser.add_argument('--max-threads', type=int, default=16)
+    parser.add_argument('--profile')
+    parser.add_argument('--batch-size', type=int)
+    parser.add_argument('--threads', type=int)
+    parser.add_argument('--max-threads', type=int)
     args_cmdline, _ = parser.parse_known_args()
     args_last_run = load_config()
 
@@ -928,6 +924,10 @@ def launch_tk_gui():
     args = get_arg_defaults()
     root = tk.Tk()
     root.title("Lightroom Face Metadata Sync")
+    try:
+        root.iconbitmap('Lightroom_Face_to_Metadata.ico')
+    except Exception:
+        pass  # Ignore if icon file is missing or not supported
 
     fields = [
         ('catalog', 'Lightroom Catalog (.lrcat)', 'file'),
