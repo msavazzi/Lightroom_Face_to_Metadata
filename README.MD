@@ -52,26 +52,40 @@ Usage Examples:
 **Basic usage (dry run):**
 
 
-    python optimized_script.py --catalog /path/to/catalog.lrcat
+    python Lightroom_Face_to_Metadata.py --catalog /path/to/catalog.lrcat
+
+    Lightroom_Face_to_Metadata.exe --catalog /path/to/catalog.lrcat
 
 **Write mode with hierarchical keywords:**
 
 
-    python optimized_script.py --catalog /path/to/catalog.lrcat --write --tags
+    python Lightroom_Face_to_Metadata.py --catalog /path/to/catalog.lrcat --write --tags
+
+    Lightroom_Face_to_Metadata.exe --catalog /path/to/catalog.lrcat --write --tags
+
 
 **Performance tuning for large catalogs:**
 
 
-    python optimized_script.py --catalog /path/to/catalog.lrcat --batch-size 2000 --write
+    python Lightroom_Face_to_Metadata.py --catalog /path/to/catalog.lrcat --batch-size 2000
+    
+    Lightroom_Face_to_Metadata.exe --catalog /path/to/catalog.lrcat --batch-size 2000
 
 **With profiling:**
 
 
-    python optimized_script.py --catalog /path/to/catalog.lrcat --profile performance.prof
+    python Lightroom_Face_to_Metadata.py --catalog /path/to/catalog.lrcat --profile performance.prof
+    
+    Lightroom_Face_to_Metadata.exe --catalog /path/to/catalog.lrcat --profile performance.prof
+  
+**GUI Mode:**
 
+
+    python Lightroom_Face_to_Metadata.py
+
+    Lightroom_Face_to_Metadata.exe
   
-  
-  
+
 
 
 *Copyright (c) 2025, Massimo Savazzi* 
