@@ -225,7 +225,7 @@ def parse_args():
     parser.add_argument('--write', action='store_true', help='Enable actual writing (default is dry-run)')
     parser.add_argument('--exiftool-path', default='exiftool', help='Path to the exiftool executable')
     parser.add_argument('--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], help='Set the logging level')
-    parser.add_argument('--write-hierarchical-tags', action='store_true', help='Write hierarchical keyword tags to metadata')
+    parser.add_argument('--tags', action='store_true', help='Write tags to metadata (Keywords, Subject, HierarchicalSubject, PersonInImage)')
     parser.add_argument('--profile', nargs='?', const='profile.prof', default=None, help='Enable profiling and save output to specified file (default: profile.prof)')
     parser.add_argument('--batch-size', type=int, default=1000, help='Database query batch size (default: 1000)')
     parser.add_argument('--threads', type=int, default=0, help='Number of threads for file operations (0 = auto-detect optimal)')

@@ -2,7 +2,7 @@
 
   
 
-**Script to sync Lightroom face data to image metadata using ExifTool**
+**Script write Lightroom face data and tags to image metadata using ExifTool**
 
   
 
@@ -11,10 +11,14 @@ Based on the database schema from: ***Lightroom Classic 14.3*** analyzed as *SQL
   
 
 The usage of python and ExifTool is needed as Lightroom does not write face data to metadata nor it provides a way to export it via Plugin API.
-The script queries the database for all the files with Faces and extracts all the regions as defined in Lightroom, this is done in memory> it also queries all the metadata related to faces amd its hierarchy.
-For every file it extracts the XMP metadata, if possible in MWG format, for the embedded metadata or the XMP sidecart .xmp file and compares the Face from database with the ones in metadata. The check to avoid duplicates is done on the name and on the region. If the Face is not present in the file it is added to the XMP metadata. It also reads all the metadata (Subject, Keywords, HierarchicalSubject) and checks if there are no duplicates it will add the Face keywords accordingly, Keywords and Subject and the full metadata hierarchy, separated by |, in the HierarchicalSubject of the picture if they are not present.
+The script queries the database for all the files with Faces and extracts all the regions as defined in Lightroom, this is done in memory; it also queries all the metadata related to faces and their hierarchy.
+For every file with faces it extracts the metadata (Subject, HirearchicalSubject, PersonInImage) from the image or the XMP sidecart .xmp file and compares the Face from database with the ones in metadata, it checks for the presence of a IPCT block to extract Keywords tag.
+On the face the check to avoid duplicates is done on the name and on the region verifying there are not regions fully overlapping.
+If the Face is not present in the file it is added to the XMP metadata. 
+The metadata is checked for duplicates, based on name, and  will add the missing Face keywords accordingly.
+The HierarchicalSubject is the full metadata hierarchy, separated by |.
 The script manages flat metadata (as in .heic files) and hierarchical regions (as in .jpg files).
-Highly optimized with threads for speed and memory.
+Highly optimized with threads for speed and memory, using a single exiftool subprocess per thread.
 
   
 
@@ -25,7 +29,7 @@ Options are:
     --write			            Enable actual writing (default is dry-run)
     --exiftool-path                     Path to the exiftool executable - default is exiftool in the same folder of the script
     --log-level		            Set the logging level - default is 'INFO', choices are 'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'
-    --write-hierarchical-tags           Write hierarchical keyword tags to metadata
+    --tags                              Write hierarchical keyword tags to metadata
     --profile                           Enable profiling and save output to specified file (default: profile.prof)
     --batch-size                        Database query batch size (default: 1000)'
     --threads                           Number of threads for file operations (0 = auto-detect optimal)
@@ -42,7 +46,7 @@ Usage Examples:
 **Write mode with hierarchical keywords:**
 
 
-    python optimized_script.py --catalog /path/to/catalog.lrcat --write --write-hierarchical-tags
+    python optimized_script.py --catalog /path/to/catalog.lrcat --write --tags
 
 **Performance tuning for large catalogs:**
 
