@@ -28,6 +28,7 @@ The metadata is checked for duplicates, based on name, and  will add the missing
 The HierarchicalSubject is the full metadata hierarchy, separated by |.
 The script manages flat metadata (as in .heic files) and hierarchical regions (as in .jpg files).
 Highly optimized with threads for speed and memory, using a single exiftool subprocess per thread.
+If executed without any flag a GUI is shown, as well as if requested from command line; at run configuration parameters are saved (Lightroom_Face_to_Metadata_last_run.json) and re loaded on next run as defaults for options not specified in the command line.
 
   
 
@@ -43,6 +44,7 @@ Options are:
     --batch-size                        Database query batch size (default: 1000)'
     --threads                           Number of threads for file operations (0 = auto-detect optimal)
     --max-threads                       Maximum number of threads to use when auto-detecting (default: 16)
+    --gui                               Shows the GUI
 
 Usage Examples:
 

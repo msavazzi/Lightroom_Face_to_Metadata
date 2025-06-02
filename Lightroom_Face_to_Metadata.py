@@ -10,6 +10,8 @@
 # The script is needed as Lightroom does not write face data to metadata nor it provides a way to export it via Plugin API.
 # Full multi-threaded implementation with error handling and logging; it uses a persistent ExifTool process for efficiency.
 # It can be run in dry-run mode to preview changes without writing to files.
+# If executed without any flag a GUI is shown, as well as if requested from command line;
+# at run configuration parameters are saved (Lightroom_Face_to_Metadata_last_run.json) and re loaded on next run as defaults for options not specified in the command line.
 #
 # The author is not responsible for any damage or loss of data that may occur as a result of using this script.
 # Use it at your own risk.
@@ -46,14 +48,20 @@ import subprocess
 import threading
 import concurrent.futures
 import time
+import tkinter as tk
+import sys
+
 from threading import Lock
 from tqdm import tqdm
 from typing import List, Tuple, Dict, Optional
 from collections import defaultdict
 from contextlib import contextmanager
+from tkinter import ttk, filedialog, messagebox
 
 # Image formats that are considered RAW and may require sidecar files for metadata
 RAW_FORMATS = {'cr2', 'cr3', 'nef', 'arw', 'rw2', 'orf', 'raf', 'dng', 'pef', 'sr2'}
+CONFIG_FILE = "Lightroom_Face_to_Metadata_last_run.json"
+
 
 thread_local = threading.local()
 db_pool = None
@@ -793,7 +801,7 @@ def main():
     results = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads, thread_name_prefix="FileWorker") as executor:
         futures = {}
-        for full_path, face_list in tqdm(file_data.items(), desc="Processing images", unit="files"):
+        for full_path, face_list in tqdm(file_data.items(), desc="Processing images",total=len(file_data), unit="files"):
             future = executor.submit(process_file_keywords, full_path, face_list, args, keyword_hierarchy)
             futures[future] = full_path
         for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Waiting for threads"):
@@ -817,5 +825,257 @@ def main():
         thread_logger.warning(f"Image processing completed: {successful}/{total} successful")
     thread_logger.warning(f"Session {session_id} complete")
 
-if __name__ == '__main__':
+# --- GUI Code ---
+
+def save_config(args, path=CONFIG_FILE):
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(args, f, indent=2)
+
+def load_config(path=CONFIG_FILE):
+    if os.path.isfile(path):
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        # Create an argparse.Namespace object for compatibility
+        return argparse.Namespace(**data)
+    # Return an empty Namespace if no config file
+    return argparse.Namespace()
+
+# Function to parse command line arguments
+def get_arg_defaults():
+
+    # Return the command line, if not present, previous run config or default values
+    def get_val(key, default=''):
+        # 1. Use command line if present (not None and not empty string)
+        val = getattr(args_cmdline, key, None)
+        if val not in [None, '']:
+            return val
+        # 2. Use last run config if present
+        if hasattr(args_last_run, key):
+            val2 = getattr(args_last_run, key)
+            if val2 not in [None, '']:
+                return val2
+        # 3. Fallback to default
+        return default
+
+     # Use parse_known_args and do NOT require catalog
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--catalog')
+    parser.add_argument('--log', default='log.txt')
+    parser.add_argument('--write', action='store_true')
+    parser.add_argument('--exiftool-path', default='exiftool')
+    parser.add_argument('--log-level', default='INFO')
+    parser.add_argument('--tags', action='store_true')
+    parser.add_argument('--profile', default=None)
+    parser.add_argument('--batch-size', type=int, default=1000)
+    parser.add_argument('--threads', type=int, default=0)
+    parser.add_argument('--max-threads', type=int, default=16)
+    args_cmdline, _ = parser.parse_known_args()
+    args_last_run = load_config()
+
+    args_dict = {
+        'catalog': get_val('catalog', 'lightroom.lrcat'),
+        'log': get_val('log', 'log.txt'),
+        'write': get_val('write', False),
+        'exiftool_path': get_val('exiftool_path', 'exiftool'),
+        'log_level': get_val('log_level', 'INFO'),
+        'tags': get_val('tags', False),
+        'profile': get_val('profile', None),
+        'batch_size': get_val('batch_size', 1000),
+        'threads': get_val('threads', 0),
+        'max_threads': get_val('max_threads', 16),
+    }
+    
+    return args_dict
+
+def run_with_args(args, progress_callback=None):
+    # Patch parse_args to use our args
+    def fake_parse_args():
+        class FakeArgs:
+            pass
+        fake = FakeArgs()
+        for k, v in args.items():
+            setattr(fake, k.replace('-', '_'), v)
+        return fake
+    
+    globals()['parse_args'] = fake_parse_args
+    
+    # Patch tqdm to update progress bar
+    orig_tqdm = tqdm
+    def tk_tqdm(iterable, desc=None, unit=None, total=None):
+        if progress_callback and total:
+            # Choose which bar to update based on desc
+            if desc == "Processing images":
+                bar_id = 0
+            elif desc == "Waiting for threads":
+                bar_id = 1
+            else:
+                bar_id = 0
+            def gen():
+                for i, item in enumerate(iterable, 1):
+                    progress_callback(bar_id, i, total)
+                    yield item
+            return gen()
+        else:
+            return orig_tqdm(iterable, desc=desc, unit=unit, total=total)
+  
+    globals()['tqdm'] = tk_tqdm
+    # Run main logic
     main()
+    # Restore tqdm
+    globals()['tqdm'] = orig_tqdm
+
+def launch_tk_gui():
+    args = get_arg_defaults()
+    root = tk.Tk()
+    root.title("Lightroom Face Metadata Sync")
+
+    fields = [
+        ('catalog', 'Lightroom Catalog (.lrcat)', 'file'),
+        ('log', 'Log File', 'file'),
+        ('write', 'Enable Writing', 'bool'),
+        ('exiftool_path', 'ExifTool Path', 'file'),
+        ('log_level', 'Log Level', 'choice', ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']),
+        ('tags', 'Write Tags', 'bool'),
+        ('profile', 'Profile Output', 'file'),
+        ('batch_size', 'Batch Size', 'int'),
+        ('threads', 'Threads', 'int'),
+        ('max_threads', 'Max Threads', 'int'),
+    ]
+    widgets = {}
+    row = 0
+    for key, label, typ, *opts in fields:
+        tk.Label(root, text=label).grid(row=row, column=0, sticky='w')
+        if typ == 'file':
+            entry = tk.Entry(root, width=50)
+            entry.insert(0, str(args.get(key, '')))  # <-- fix here
+            entry.grid(row=row, column=1)
+            def browse(entry=entry, key=key):
+                if key == 'catalog':
+                    f = filedialog.askopenfilename(filetypes=[('Lightroom Catalog', '*.lrcat')])
+                elif key == 'log':
+                    f = filedialog.asksaveasfilename(defaultextension='.txt')
+                elif key == 'exiftool-path':
+                    f = filedialog.askopenfilename()
+                elif key == 'profile':
+                    f = filedialog.asksaveasfilename(defaultextension='.prof')
+                else:
+                    f = filedialog.askopenfilename()
+                if f:
+                    entry.delete(0, tk.END)
+                    entry.insert(0, f)
+            btn = tk.Button(root, text="Browse", command=browse)
+            btn.grid(row=row, column=2)
+            widgets[key] = entry
+        elif typ == 'bool':
+            var = tk.BooleanVar(value=bool(args.get(key, False)))
+            chk = tk.Checkbutton(root, variable=var)
+            chk.grid(row=row, column=1, sticky='w')
+            widgets[key] = var
+        elif typ == 'choice':
+            var = tk.StringVar(value=args.get(key, opts[0][0]))
+            combo = ttk.Combobox(root, textvariable=var, values=opts[0], state='readonly')
+            combo.grid(row=row, column=1, sticky='w')
+            widgets[key] = var
+        elif typ == 'int':
+            val = args.get(key, 0)
+            try:
+                val = int(val)
+            except Exception:
+                val = 0
+            var = tk.StringVar(value=str(val))
+            entry = tk.Entry(root, textvariable=var, width=10)
+            entry.grid(row=row, column=1, sticky='w')
+            widgets[key] = var
+        row += 1
+
+    # Add two progress bars
+    label1 = tk.Label(root, text="Processing images")
+    label1.grid(row=row, column=0, sticky='w')
+    row += 1
+    progress1 = ttk.Progressbar(root, orient='horizontal', length=400, mode='determinate')
+    progress1.grid(row=row, column=0, columnspan=3, pady=5)
+    row += 1
+    status1 = tk.Label(root, text="")
+    status1.grid(row=row, column=0, columnspan=3)
+    row += 1
+    label2 = tk.Label(root, text="Waiting for threads")
+    label2.grid(row=row, column=0, sticky='w')
+    row += 1
+    progress2 = ttk.Progressbar(root, orient='horizontal', length=400, mode='determinate')
+    progress2.grid(row=row, column=0, columnspan=3, pady=5)
+    row += 1
+    status2 = tk.Label(root, text="")
+    status2.grid(row=row, column=0, columnspan=3)
+    row += 1
+    status = tk.Label(root, text="")
+    status.grid(row=row, column=0, columnspan=3)
+
+    def on_run():
+        # Gather args from widgets
+        run_args = {}
+        for key, label, typ, *opts in fields:
+            if typ == 'file':
+                run_args[key] = widgets[key].get()
+            elif typ == 'bool':
+                run_args[key] = widgets[key].get()
+            elif typ == 'choice':
+                run_args[key] = widgets[key].get()
+            elif typ == 'int':
+                try:
+                    run_args[key] = int(widgets[key].get())
+                except Exception:
+                    run_args[key] = 0
+        
+        # Validate required fields
+        if not run_args['catalog']:
+            messagebox.showerror("Error", "Catalog file is required.")
+            return
+        # Save config
+        save_config(run_args)
+        # Disable UI
+        for w in widgets.values():
+            if hasattr(w, 'config'):
+                w.config(state='disabled')
+        progress1['value'] = 0
+        progress2['value'] = 0
+        status['text'] = "Running..."
+        root.update()
+        # Run in thread to avoid blocking UI
+        def run_job():
+            try:
+                def prog_cb(bar_id, i, total):
+                    if bar_id == 0:
+                        progress1['maximum'] = total
+                        progress1['value'] = i
+                        status1['text'] = f"Processing images {i}/{total}"
+                    elif bar_id == 1:
+                        progress2['maximum'] = total
+                        progress2['value'] = i
+                        status2['text'] = f"Waiting for threads {i}/{total}"
+                    root.update_idletasks()
+                run_with_args(run_args, progress_callback=prog_cb)
+                status['text'] = "Done!"
+            except Exception as e:
+                status['text'] = f"Error: {e}"
+                messagebox.showerror("Error", str(e))
+            finally:
+                for w in widgets.values():
+                    if hasattr(w, 'config'):
+                        w.config(state='normal')
+        threading.Thread(target=run_job, daemon=True).start()
+
+    run_btn = tk.Button(root, text="Run", command=on_run)
+    run_btn.grid(row=row+2, column=0, pady=10)
+    quit_btn = tk.Button(root, text="Quit", command=root.destroy)
+    quit_btn.grid(row=row+2, column=1, pady=10)
+    root.mainloop()
+
+if __name__ == '__main__':
+    # Show GUI if --gui is present or if no arguments are provided, otherwise run in CLI mode
+    if '--gui' in sys.argv or len(sys.argv) == 1:
+        if '--gui' in sys.argv:
+            sys.argv.remove('--gui')
+        launch_tk_gui()
+    else:
+        args = parse_args()
+        main()
